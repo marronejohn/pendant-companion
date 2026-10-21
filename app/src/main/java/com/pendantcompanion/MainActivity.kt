@@ -163,9 +163,28 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             }
         }
         Spacer(Modifier.height(16.dp))
+        val syncRunning = (sync as? PendantViewModel.SyncProgress)?.finished == false
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button({ vm.checkStorageNow() }) { Text("Check storage") }
-            Button({ vm.syncReadOnly() }) { Text("Download flash") }
+            Button({ vm.checkStorageNow() }, enabled = !syncRunning) { Text("Check storage") }
+            Button({ vm.syncReadOnly() }, enabled = !syncRunning) {
+                Text(if (syncRunning) "Syncing..." else "Download flash")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        (sync as? PendantViewModel.SyncProgress)?.let { p ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(if (p.finished) "Sync finished" else "Syncing flash (read-only)...",
+                         style = MaterialTheme.typography.titleSmall)
+                    LinearProgressIndicator(
+                        progress = { if (p.finished) 1f else 0.05f },
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    )
+                    Text("Pages saved: ${p.pagesSaved}   Frames seen: ${p.framesSeen}   Bytes: ${p.bytesSaved / 1024} KB")
+                    if (p.lastPageIndex >= 0) Text("Last page index: ${p.lastPageIndex}")
+                    Text(p.note, style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
         Spacer(Modifier.height(8.dp))
         val pickModel = rememberLauncherForActivityResult(
@@ -186,21 +205,6 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             )
         }
         Spacer(Modifier.height(8.dp))
-        (sync as? PendantViewModel.SyncProgress)?.let { p ->
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(if (p.finished) "Sync finished" else "Syncing flash (read-only)...",
-                         style = MaterialTheme.typography.titleSmall)
-                    LinearProgressIndicator(
-                        progress = { if (p.finished) 1f else 0.05f },
-                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    )
-                    Text("Pages saved: ${p.pagesSaved}   Frames seen: ${p.framesSeen}   Bytes: ${p.bytesSaved / 1024} KB")
-                    if (p.lastPageIndex >= 0) Text("Last page index: ${p.lastPageIndex}")
-                    Text(p.note, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
         Spacer(Modifier.height(12.dp))
         Button(onDisconnect) { Text("Disconnect") }
         Text("Read-only: pages are copied to this phone and the pendant keeps its copies (no acknowledge is sent).",
