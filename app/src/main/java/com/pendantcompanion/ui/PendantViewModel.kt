@@ -196,6 +196,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         try {
                             val info = inspect(s)
                             _state.value = State.Connected(device.name ?: device.address, info)
+                            checkStorageNow()
                         } catch (e: Exception) {
                             fail = "Connected, but device inspection failed: ${e.message}"
                             _state.value = State.Error(fail!!)
@@ -312,6 +313,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 s.beginBatchDownload()
+                syncProgress.value = SyncProgress(0, 0, 0, -1, false,
+                    "download request sent — waiting for the pendant to send pages...")
                 // Idle timeout: 6s with nothing new means the flash is drained
                 // (reference uses 5s). While pages keep arriving, keep going.
                 var idle = 0
@@ -323,7 +326,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     if (idle >= 1) break // 6s of silence
                 }
                 try { s.stopBatchDownload() } catch (_: Exception) { /* link may drop */ }
-                note = "saved $pages pages, pendant copy untouched (no ack sent)"
+                note = if (pages == 0)
+                    "pendant sent no pages. Try: short-press the pendant to wake it, make sure no other app is connected to it, then reconnect here and tap Download flash again."
+                else
+                    "saved $pages pages, pendant copy untouched (no ack sent)"
                 syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true, note)
             } catch (e: Exception) {
                 try { s.stopBatchDownload() } catch (_: Exception) {}
@@ -331,11 +337,14 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     "stopped: ${e.message ?: e.javaClass.simpleName}. $pages pages kept, pendant copy untouched")
             } finally {
                 s.storageListener = null
-                // re-read storage to prove nothing was freed
+                // re-read storage to prove nothing was freed (time-bounded so a
+                // dead link can never leave this job active and block the next sync)
                 try {
-                    val st2 = storageStatus(s)
-                    note = "after sync: pendant flash now $st2.oldestPage..$st2.newestPage (unchanged = success)"
-                    syncProgress.value = syncProgress.value?.copy(note = note)
+                val st2 = kotlinx.coroutines.withTimeoutOrNull(6_000) { storageStatus(s) }
+                if (st2 != null) {
+                    val note2 = "after sync: pendant flash now $st2.oldestPage..$st2.newestPage (unchanged = success)"
+                    syncProgress.value = syncProgress.value?.copy(note = note2)
+                }
                 } catch (_: Exception) {}
             }
         }
@@ -343,11 +352,19 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     /** One-shot storage readout, reported through the same status flow as sync. */
     fun checkStorageNow() {
-        val s = session ?: return
+        val s = session ?: run {
+            syncProgress.value = SyncProgress(0, 0, 0, -1, true, "not connected yet")
+            return
+        }
         if (syncJob?.isActive == true) return
         syncJob = scope.launch(Dispatchers.Main) {
             try {
-                val v = storageStatus(s)
+                val v = kotlinx.coroutines.withTimeoutOrNull(8_000) { storageStatus(s) }
+                if (v == null) {
+                    syncProgress.value = SyncProgress(0, 0, 0, -1, true,
+                        "storage check timed out (no reply from pendant)")
+                    return@launch
+                }
                 val used = v.totalCapturePages - v.freeCapturePages
                 syncProgress.value = SyncProgress(0, 0, 0, -1, true,
                     "flash: $used of ${v.totalCapturePages} capture pages used, session ${v.currentSession}, pages ${v.oldestPage}..${v.newestPage}")
