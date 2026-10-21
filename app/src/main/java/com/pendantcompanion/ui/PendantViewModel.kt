@@ -123,6 +123,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _player = MutableStateFlow<PlayerState>(PlayerState.Idle)
     val player: StateFlow<PlayerState> = _player
+
+    /** Note from the last decode, e.g. how many frames were skipped as unusable. */
+    private val _decodeNote = MutableStateFlow<String?>(null)
+    val decodeNote: StateFlow<String?> = _decodeNote
     private var mediaPlayer: android.media.MediaPlayer? = null
     private var decodeJob: Job? = null
 
@@ -455,13 +459,19 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         _player.value = PlayerState.PlayerError("No audio frames found for session $session")
                         return@launch
                     }
+                    var skipped = 0
                     _player.value = PlayerState.Decoding(session, 0, packets.size)
                     val jobCtx = kotlinx.coroutines.currentCoroutineContext()
                     OpusDecoder.decodeToWav(
                         packets, out,
                         keepGoing = { jobCtx.isActive },
                         onProgress = { done, total -> _player.value = PlayerState.Decoding(session, done, total) },
+                        onSkipped = { n, _ -> skipped += n },
                     )
+                    _decodeNote.value = if (skipped > 0)
+                        "Session $session: skipped $skipped unusable frames while decoding"
+                    else
+                        null
                 }
                 ensureActive()
                 withContextMain {
@@ -495,13 +505,19 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         _player.value = PlayerState.PlayerError("No audio frames found for session $session")
                         return@launch
                     }
+                    var skipped = 0
                     _player.value = PlayerState.Decoding(session, 0, packets.size)
                     val jobCtx = kotlinx.coroutines.currentCoroutineContext()
                     OpusDecoder.decodeToWav(
                         packets, out,
                         keepGoing = { jobCtx.isActive },
                         onProgress = { done, total -> _player.value = PlayerState.Decoding(session, done, total) },
+                        onSkipped = { n, _ -> skipped += n },
                     )
+                    _decodeNote.value = if (skipped > 0)
+                        "Session $session: skipped $skipped unusable frames while decoding"
+                    else
+                        null
                 }
                 ensureActive()
                 val uri = androidx.core.content.FileProvider.getUriForFile(
@@ -655,6 +671,11 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /** True when at least one transcript file exists on this phone. */
+    fun hasAnyTranscripts(): Boolean =
+        java.io.File(getApplication<Application>().filesDir, "transcripts")
+            .listFiles()?.any { it.name.startsWith("session_") && it.name.endsWith(".txt") } == true
 
     /** Full transcript text for the in-app viewer, or null when none is saved. */
     fun transcriptText(session: Int): String? =

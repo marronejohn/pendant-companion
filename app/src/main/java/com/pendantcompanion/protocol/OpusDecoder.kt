@@ -19,10 +19,19 @@ import java.util.concurrent.atomic.AtomicReference
  * the bare Opus packets carried inside flash-page audio-data fields (TOC 0xb8,
  * CELT wideband, 20 ms). Async mode feeds and drains continuously, which is
  * orders of magnitude faster than one packet per sync round-trip.
+ *
+ * Resilience: the stream is decoded in chunks, each with its own codec
+ * instance. One malformed frame can raise a fatal CodecException; a chunk
+ * that dies is skipped and counted, and decoding continues with the next
+ * chunk, so a bad stretch costs at most ~10 s of audio instead of the whole
+ * export or playback.
  */
 object OpusDecoder {
     const val SAMPLE_RATE = 48000
     const val FRAME_MS = 20
+
+    /** Packets per decode chunk (512 x 20 ms = ~10 s of audio). */
+    private const val CHUNK = 512
 
     /** Standard OpusHead identification header, 19 bytes, mono 48 kHz. */
     private fun opusHead(): ByteArray {
@@ -41,26 +50,94 @@ object OpusDecoder {
 
     /**
      * Decodes [packets] into a WAV at [out]. [keepGoing] is polled as a
-     * cooperative cancel check. Returns decoded sample count.
+     * cooperative cancel check. Returns decoded sample count. [onSkipped]
+     * reports each skipped packet range with the codec's failure reason.
      */
     fun decodeToWav(
         packets: List<ByteArray>,
         out: File,
         keepGoing: () -> Boolean = { true },
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+        onSkipped: (count: Int, reason: String) -> Unit = { _, _ -> },
     ): Long {
         if (packets.isEmpty()) throw IllegalStateException("no audio packets to decode")
+        val tmp = File(out.parentFile, out.name + ".tmp")
+        var written = 0L
+        var skipped = 0
+        var firstFailure: String? = null
+        FileOutputStream(tmp).use { fos ->
+            fos.write(ByteArray(44)) // WAV header patched in place after decoding
+            var start = 0
+            while (start < packets.size) {
+                if (!keepGoing()) break
+                val end = minOf(start + CHUNK, packets.size)
+                val (bytes, failure) = decodeChunkInto(packets.subList(start, end), fos, keepGoing)
+                written += bytes // a failed chunk's partial PCM is real audio up to the failure point
+                if (failure == null) {
+                    // chunk fully decoded
+                } else {
+                    skipped += end - start
+                    if (firstFailure == null) firstFailure = failure
+                    onSkipped(end - start, failure)
+                }
+                onProgress(end, packets.size)
+                start = end
+            }
+        }
+        if (!keepGoing()) throw IllegalStateException("decode cancelled")
+        if (written == 0L) {
+            throw IllegalStateException(
+                "decode failed: ${firstFailure ?: "unknown"} (no decodable audio in ${packets.size} packets)")
+        }
+        // patch WAV sizes now that the PCM length is known
+        val dataSize = written
+        RandomAccessFile(tmp, "rw").use { raf ->
+            raf.seek(0)
+            val header = java.io.ByteArrayOutputStream()
+            fun le16(v: Int) { header.write(v and 0xff); header.write((v shr 8) and 0xff) }
+            fun le32(v: Int) { le16(v and 0xffff); le16((v shr 16) and 0xffff) }
+            "RIFF".toByteArray().forEach { header.write(it.toInt()) }
+            le32((36 + dataSize).toInt())
+            "WAVE".toByteArray().forEach { header.write(it.toInt()) }
+            "fmt ".toByteArray().forEach { header.write(it.toInt()) }
+            le32(16)
+            le16(1) // PCM
+            le16(1) // mono
+            le32(SAMPLE_RATE)
+            le32(SAMPLE_RATE * 2)
+            le16(2)
+            le16(16)
+            "data".toByteArray().forEach { header.write(it.toInt()) }
+            le32(dataSize.toInt())
+            raf.write(header.toByteArray())
+        }
+        if (!tmp.renameTo(out)) {
+            out.delete()
+            tmp.copyTo(out, overwrite = true)
+            tmp.delete()
+        }
+        return dataSize / 2
+    }
+
+    /**
+     * Decodes one chunk into [fos] with a dedicated codec instance. Returns
+     * the bytes written, plus the failure reason when the chunk died (a
+     * CodecException is usually fatal to the codec instance).
+     */
+    private fun decodeChunkInto(
+        chunk: List<ByteArray>,
+        fos: FileOutputStream,
+        keepGoing: () -> Boolean,
+    ): Pair<Long, String?> {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, SAMPLE_RATE, 1)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 65536)
         format.setByteBuffer("csd-0", ByteBuffer.wrap(opusHead()))
         val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS)
-        val tmp = File(out.parentFile, out.name + ".tmp")
         val failure = AtomicReference<String?>(null)
         val eosQueued = AtomicBoolean(false)
         val feedingDone = AtomicBoolean(false)
         val queue = ConcurrentLinkedQueue<Pair<Int, ByteArray>>()
         val writtenBytes = AtomicLong(0L)
-        var fos: FileOutputStream? = null
         val latch = CountDownLatch(1)
         try {
             codec.setCallback(object : MediaCodec.Callback() {
@@ -91,11 +168,10 @@ object OpusDecoder {
                     try {
                         val ob = c.getOutputBuffer(index)!!
                         if (info.size > 0) {
-                            val chunk = ByteArray(info.size)
+                            val out = ByteArray(info.size)
                             ob.position(info.offset)
-                            ob.get(chunk)
-                            val f = fos
-                            if (f != null) synchronized(f) { f.write(chunk) }
+                            ob.get(out)
+                            synchronized(fos) { fos.write(out) }
                             writtenBytes.addAndGet(info.size.toLong())
                         }
                         c.releaseOutputBuffer(index, false)
@@ -114,9 +190,8 @@ object OpusDecoder {
                 }
             })
             codec.configure(format, null, null, 0)
-            fos = FileOutputStream(tmp).also { it.write(ByteArray(44)) } // header patched below
             codec.start()
-            packets.forEachIndexed { i, p -> queue.add(i to p) }
+            chunk.forEachIndexed { i, p -> queue.add(i to p) }
             feedingDone.set(true)
             // await with cancel + stall watchdog
             var last = -1L
@@ -135,43 +210,13 @@ object OpusDecoder {
                     break
                 }
                 last = w
-                val done = (w / 1920L).toInt().coerceAtMost(packets.size)
-                onProgress(done, packets.size)
             }
             val fail = failure.get()
-            if (fail != null) throw IllegalStateException("decode failed: $fail")
+            if (fail != null) return writtenBytes.get() to fail
         } finally {
             try { codec.stop() } catch (_: Exception) {}
             try { codec.release() } catch (_: Exception) {}
-            try { fos?.close() } catch (_: Exception) {}
         }
-        // patch WAV sizes now that the PCM length is known
-        val dataSize = writtenBytes.get()
-        RandomAccessFile(tmp, "rw").use { raf ->
-            raf.seek(0)
-            val header = java.io.ByteArrayOutputStream()
-            fun le16(v: Int) { header.write(v and 0xff); header.write((v shr 8) and 0xff) }
-            fun le32(v: Int) { le16(v and 0xffff); le16((v shr 16) and 0xffff) }
-            "RIFF".toByteArray().forEach { header.write(it.toInt()) }
-            le32((36 + dataSize).toInt())
-            "WAVE".toByteArray().forEach { header.write(it.toInt()) }
-            "fmt ".toByteArray().forEach { header.write(it.toInt()) }
-            le32(16)
-            le16(1) // PCM
-            le16(1) // mono
-            le32(SAMPLE_RATE)
-            le32(SAMPLE_RATE * 2)
-            le16(2)
-            le16(16)
-            "data".toByteArray().forEach { header.write(it.toInt()) }
-            le32(dataSize.toInt())
-            raf.write(header.toByteArray())
-        }
-        if (!tmp.renameTo(out)) {
-            out.delete()
-            tmp.copyTo(out, overwrite = true)
-            tmp.delete()
-        }
-        return dataSize / 2
+        return writtenBytes.get() to null
     }
 }

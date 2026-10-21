@@ -229,13 +229,14 @@ fun SessionsCard(vm: PendantViewModel) {
     val player by vm.player.collectAsState()
     val sync by vm.sync.collectAsState()
     val trans by vm.trans.collectAsState()
+    val decodeNote by vm.decodeNote.collectAsState()
     LaunchedEffect(Unit) { vm.refreshSessions() }
     LaunchedEffect((sync as? PendantViewModel.SyncProgress)?.finished) {
         if ((sync as? PendantViewModel.SyncProgress)?.finished == true) vm.refreshSessions()
     }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Recordings on this phone", style = MaterialTheme.typography.titleMedium)
+            Text("Recordings from the pendant on this phone", style = MaterialTheme.typography.titleMedium)
             if (sessions.isEmpty()) {
                 Text("Nothing saved yet. Tap Download flash first.",
                      style = MaterialTheme.typography.bodySmall)
@@ -318,6 +319,9 @@ fun SessionsCard(vm: PendantViewModel) {
                          style = MaterialTheme.typography.bodySmall)
                 else -> {}
             }
+            decodeNote?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
@@ -383,7 +387,13 @@ fun SearchCard(vm: PendantViewModel) {
                     Icon(Icons.Filled.Search, contentDescription = "Search")
                 }
             }
-            if (search.searched) {
+            val anyTranscripts = remember(search.searched) { vm.hasAnyTranscripts() }
+            if (!anyTranscripts) {
+                Text(
+                    "No transcripts yet. Tap the TR icon on a recording to transcribe it first; search reads transcripts, not audio.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else if (search.searched) {
                 if (search.hits.isEmpty()) {
                     Text("No transcripts contain \"${search.query}\".",
                          style = MaterialTheme.typography.bodySmall)
