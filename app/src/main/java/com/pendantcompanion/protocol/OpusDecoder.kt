@@ -87,7 +87,7 @@ object OpusDecoder {
         if (!keepGoing()) throw IllegalStateException("decode cancelled")
         if (written == 0L) {
             throw IllegalStateException(
-                "decode failed: ${firstFailure ?: "unknown"} (no decodable audio in ${packets.size} packets)")
+                "decode failed: ${firstFailure ?: "decoder produced no output"} | ${packetDiag(packets)}")
         }
         // patch WAV sizes now that the PCM length is known
         val dataSize = written
@@ -117,6 +117,32 @@ object OpusDecoder {
             tmp.delete()
         }
         return dataSize / 2
+    }
+
+    /**
+     * One-line structure summary of a packet list, for failure reports:
+     * sizes plus how many packets start with the expected Opus TOC byte
+     * (0xb8) versus the raw 0x22 wrapper byte. Plaintext Opus should be
+     * nearly all 0xb8; encrypted or malformed audio shows random first
+     * bytes, which is the tell that separates encryption from a parsing bug.
+     */
+    private fun packetDiag(packets: List<ByteArray>): String {
+        if (packets.isEmpty()) return "no packets"
+        var min = Int.MAX_VALUE; var max = 0; var sum = 0L
+        var b8 = 0; var w22 = 0
+        packets.forEach { p ->
+            if (p.isEmpty()) { min = 0; return@forEach }
+            if (p.size < min) min = p.size
+            if (p.size > max) max = p.size
+            sum += p.size
+            when (p[0]) {
+                0xb8.toByte() -> b8++
+                0x22.toByte() -> w22++
+            }
+        }
+        val first = packets.take(3).joinToString(" ") { "0x%02x".format(it[0].toInt() and 0xff) }
+        return ("packets=${packets.size}, sizes ${min}..${max} avg ${sum / packets.size}, " +
+            "first bytes $first, TOC 0xb8: $b8/${packets.size}, 0x22-wrapped: $w22/${packets.size}")
     }
 
     /**
@@ -212,6 +238,7 @@ object OpusDecoder {
                 last = w
             }
             val fail = failure.get()
+                ?: if (writtenBytes.get() == 0L) "decoder produced no output for this chunk" else null
             if (fail != null) return writtenBytes.get() to fail
         } finally {
             try { codec.stop() } catch (_: Exception) {}
