@@ -529,8 +529,12 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                              android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 withContextMain {
-                    getApplication<Application>()
-                        .startActivity(android.content.Intent.createChooser(share, "Export session $session"))
+                    // the chooser is a fresh intent: it does NOT inherit the
+                    // share intent's flags, so it needs NEW_TASK itself when
+                    // started from application context
+                    val chooser = android.content.Intent.createChooser(share, "Export session $session")
+                    chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    getApplication<Application>().startActivity(chooser)
                 }
                 _player.value = PlayerState.Idle
             } catch (e: Exception) {
@@ -698,8 +702,9 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
                      android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        getApplication<Application>()
-            .startActivity(android.content.Intent.createChooser(share, "Transcript session $session"))
+        val chooser = android.content.Intent.createChooser(share, "Transcript session $session")
+        chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        getApplication<Application>().startActivity(chooser)
     }
 
     private suspend fun decodeSessionWav(session: Int): java.io.File {
