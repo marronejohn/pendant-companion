@@ -24,6 +24,13 @@ import com.pendantcompanion.ui.PendantViewModel.State.Idle
 import com.pendantcompanion.ui.PendantViewModel.State.ScanResults
 import com.pendantcompanion.ui.PendantViewModel.State.Scanning
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import android.bluetooth.BluetoothAdapter
@@ -194,6 +201,8 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         Spacer(Modifier.height(8.dp))
         SessionsCard(vm)
         Spacer(Modifier.height(8.dp))
+        SearchCard(vm)
+        Spacer(Modifier.height(8.dp))
         val ctx = LocalContext.current
         var exportedCount by remember { mutableStateOf(-1) }
         Button({ exportedCount = exportFlashPages(ctx) }) { Text("Export pages") }
@@ -241,6 +250,14 @@ fun SessionsCard(vm: PendantViewModel) {
                                 Text(
                                     "${sess.pages} pages · ${sess.frames} frames · " +
                                         "~${sess.durationSec / 60}m ${sess.durationSec % 60}s",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Text(
+                                    if (sess.startMs > 0)
+                                        java.text.SimpleDateFormat(
+                                            "d MMM yyyy, h:mm a", java.util.Locale.getDefault(),
+                                        ).format(java.util.Date(sess.startMs))
+                                    else "date not recorded (older firmware)",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
@@ -332,6 +349,85 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                     Text(t.message, color = MaterialTheme.colorScheme.error,
                          style = MaterialTheme.typography.bodySmall)
                 else -> {}
+            }
+        }
+    }
+}
+
+@Composable
+fun SearchCard(vm: PendantViewModel) {
+    val search by vm.search.collectAsState()
+    var query by remember { mutableStateOf("") }
+    var viewing by remember { mutableStateOf<Int?>(null) }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Search your recordings", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Finds words in transcripts. Transcribe a session (the TR icon) first. Everything runs on this phone.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    Modifier.weight(1f),
+                    singleLine = true,
+                    placeholder = { Text("Search transcripts") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { vm.runSearch(query) }),
+                )
+                IconButton({ vm.runSearch(query) }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search")
+                }
+            }
+            if (search.searched) {
+                if (search.hits.isEmpty()) {
+                    Text("No transcripts contain \"${search.query}\".",
+                         style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Text("${search.hits.size} session(s) match",
+                         style = MaterialTheme.typography.bodySmall)
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 220.dp)) {
+                        items(search.hits) { hit ->
+                            Column(
+                                Modifier.fillMaxWidth()
+                                    .clickable { viewing = hit.session }
+                                    .padding(vertical = 6.dp),
+                            ) {
+                                Text(
+                                    "Session ${hit.session}" +
+                                        if (hit.stamp.isNotEmpty()) " · ${hit.stamp}" else "",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    hit.snippet,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 4,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            viewing?.let { sess ->
+                val text = remember(sess) { vm.transcriptText(sess) } ?: ""
+                AlertDialog(
+                    onDismissRequest = { viewing = null },
+                    confirmButton = { TextButton({ viewing = null }) { Text("Close") } },
+                    title = { Text("Session $sess transcript") },
+                    text = {
+                        Column(
+                            Modifier.heightIn(max = 420.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            Text(
+                                if (text.isEmpty()) "No transcript saved for this session." else text,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    },
+                )
             }
         }
     }

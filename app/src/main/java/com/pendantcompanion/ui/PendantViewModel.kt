@@ -106,6 +106,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     /** One pendant recording session found among the saved flash pages. */
     data class SessionInfo(
         val session: Int, val pages: Int, val frames: Long, val durationSec: Long,
+        /** Wall-clock start of the session (epoch ms), 0 when the pendant's page stamp is boot-clock and cannot be dated. */
+        val startMs: Long = 0,
     )
 
     private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList())
@@ -390,17 +392,27 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val dir = flashPagesDir()
                 val bySess = sortedMapOf<Int, LongArray>() // session -> [pages, frames]
+                val firstPage = mutableMapOf<Int, Pair<Int, java.io.File>>() // session -> (lowest page index, its file)
                 dir.listFiles()?.forEach { f ->
                     val m = Regex("page_(\\d+)_session(\\d+)\\.bin").matchEntire(f.name)
                         ?: return@forEach
+                    val idx = m.groupValues[1].toInt()
                     val sess = m.groupValues[2].toInt()
                     val frames = FlashPageParser.extractOpusFrames(f.readBytes()).size.toLong()
                     val cur = bySess[sess] ?: longArrayOf(0, 0)
                     cur[0] += 1; cur[1] += frames
                     bySess[sess] = cur
+                    val best = firstPage[sess]
+                    if (best == null || idx < best.first) firstPage[sess] = idx to f
                 }
                 val list = bySess.map { (sess, pf) ->
-                    SessionInfo(sess, pf[0].toInt(), pf[1], pf[1] * 20 / 1000)
+                    // The pendant stamps every page with its own clock. Recent
+                    // firmware writes epoch milliseconds (>= 10^12); older firmware
+                    // wrote boot-clock milliseconds, which cannot be dated without a
+                    // cross-reference, so those sessions stay undated here.
+                    val ts = FlashPageParser.timestampMs(firstPage.getValue(sess).second.readBytes())
+                    val startMs = if (ts >= 1_000_000_000_000L) ts else 0L
+                    SessionInfo(sess, pf[0].toInt(), pf[1], pf[1] * 20 / 1000, startMs)
                 }.sortedBy { it.session }
                 _sessions.value = list
             } catch (e: Exception) {
@@ -599,6 +611,54 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /** One transcript match: session, the [mm:ss] stamp of the first hit, and matching lines. */
+    data class SearchHit(val session: Int, val stamp: String, val snippet: String)
+    data class SearchState(val query: String, val hits: List<SearchHit>, val searched: Boolean)
+
+    private val _search = MutableStateFlow(SearchState("", emptyList(), false))
+    val search: StateFlow<SearchState> = _search
+    private var searchJob: Job? = null
+
+    /**
+     * Local-only keyword search over saved transcripts. No network, no index
+     * file to maintain: transcripts are small, so each search re-scans them.
+     */
+    fun runSearch(raw: String) {
+        val query = raw.trim()
+        if (query.isEmpty()) { _search.value = SearchState("", emptyList(), false); return }
+        if (searchJob?.isActive == true) return
+        searchJob = scope.launch(Dispatchers.IO) {
+            try {
+                val dir = java.io.File(getApplication<Application>().filesDir, "transcripts")
+                val hits = mutableListOf<SearchHit>()
+                dir.listFiles()?.sortedBy { it.name }?.forEach { f ->
+                    val m = Regex("session_(\\d+)\\.txt").matchEntire(f.name) ?: return@forEach
+                    val sess = m.groupValues[1].toInt()
+                    val matches = mutableListOf<String>()
+                    var stamp = ""
+                    for (line in f.readLines()) {
+                        if (line.contains(query, ignoreCase = true)) {
+                            if (matches.isEmpty()) {
+                                stamp = Regex("\\[[^]]+\\]").find(line)?.value ?: ""
+                            }
+                            matches.add(line.trim().take(220))
+                            if (matches.size >= 3) break
+                        }
+                    }
+                    if (matches.isNotEmpty()) hits.add(SearchHit(sess, stamp, matches.joinToString("\n")))
+                    if (hits.size >= 40) return@forEach
+                }
+                _search.value = SearchState(query, hits, true)
+            } catch (e: Exception) {
+                _search.value = SearchState(query, emptyList(), true)
+            }
+        }
+    }
+
+    /** Full transcript text for the in-app viewer, or null when none is saved. */
+    fun transcriptText(session: Int): String? =
+        transcriptFile(session).takeIf { it.exists() }?.readText()
 
     fun transcriptFile(session: Int): java.io.File =
         java.io.File(
