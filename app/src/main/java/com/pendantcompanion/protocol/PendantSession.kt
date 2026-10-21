@@ -31,7 +31,7 @@ class PendantSession(
     private val client: PendantGattClient,
     private val timeSourceMs: () -> Long = System::currentTimeMillis,
 ) {
-    private val assembler = FragmentAssembler(maxPending = 16)
+    private val assembler = FragmentAssembler(maxPending = 64)
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<Server.PendantAllMsg>>()
     private val pendingByOneof = ConcurrentHashMap<String, CompletableDeferred<Server.PendantAllMsg>>()
     private val nextRequestId = AtomicLong(1)
@@ -39,6 +39,9 @@ class PendantSession(
     @Volatile private var sender: FragmentSender? = null
     @Volatile var lastError: String? = null
         private set
+
+    /** Set during a flash download; receives every StorageBufferMsg the pendant pushes. */
+    @Volatile var storageListener: ((Server.StorageBufferMsg) -> Unit)? = null
 
     fun onBleReady(mtu: Int) { sender = FragmentSender(mtu) }
 
@@ -71,7 +74,7 @@ class PendantSession(
         if (oneof != null) {
             pendingByOneof.remove(oneof)?.let { if (!it.isCompleted) it.complete(msg) }
         }
-        // unsolicited (heartbeats, storage buffers) is dropped in this phase
+        if (msg.hasStorageBuffer()) storageListener?.invoke(msg.storageBuffer)
     }
 
     fun oneofName(msg: Server.PendantAllMsg): String? = when {
@@ -132,6 +135,36 @@ class PendantSession(
             it.setCurrentTime = Server.SetCurrentTime.newBuilder()
                 .setUnixTimestampMs(timeSourceMs()).build()
         }
+
+    /**
+     * One-way command (no ack expected). Used for batch-download start/stop,
+     * mirroring session.py's _send_oneway (do_not_ack=true).
+     */
+    suspend fun sendOneway(setOneof: (Server.ServerCommandMsg.Builder) -> Unit) {
+        val s = sender ?: throw IllegalStateException("BLE transport not ready (no negotiated MTU yet)")
+        val requestId = nextRequestId.getAndIncrement()
+        val cmd = Server.ServerCommandMsg.newBuilder().apply {
+            requestData = Server.RequestData.newBuilder().setRequestId(requestId).setDoNotAck(true).build()
+            setOneof(this)
+        }.build()
+        val sendOk = withContext(Dispatchers.Main) {
+            s.fragments(nextMessageIndex.getAndIncrement().toInt(), cmd.toByteArray())
+                .all { client.send(it.toByteArray()) }
+        }
+        if (!sendOk) throw IllegalStateException("Could not queue fragments for send")
+    }
+
+    /** Download mode: pendant pushes stored flash pages as StorageBufferMsgs. */
+    suspend fun beginBatchDownload() = sendOneway {
+        it.downloadFlashPages = Server.DownloadFlashPages.newBuilder()
+            .setBatchModeEnabled(true).setRealTimeModeEnabled(false).build()
+    }
+
+    /** Return the pendant to record-to-flash mode. */
+    suspend fun stopBatchDownload() = sendOneway {
+        it.downloadFlashPages = Server.DownloadFlashPages.newBuilder()
+            .setBatchModeEnabled(false).setRealTimeModeEnabled(false).build()
+    }
 
     fun close() {
         pending.values.forEach { it.cancel() }

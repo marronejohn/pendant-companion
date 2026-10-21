@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import com.pendantcompanion.ble.PendantGattClient
 import com.pendantcompanion.ble.PendantScanHit
 import com.pendantcompanion.ble.PendantScanner
+import com.pendantcompanion.protocol.FlashPageParser
 import com.pendantcompanion.protocol.PendantSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +37,16 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         data class Error(val message: String) : State
     }
 
+    data class StorageView(
+        val oldestPage: Int, val newestPage: Int, val currentSession: Int,
+        val freeCapturePages: Int, val totalCapturePages: Int, val syncMode: Int,
+    )
+
+    data class SyncProgress(
+        val pagesSaved: Int, val framesSeen: Long, val bytesSaved: Long,
+        val lastPageIndex: Int, val finished: Boolean, val note: String = "",
+    )
+
     data class DeviceInfoView(
         val serial: String,
         val firmware: String,
@@ -54,6 +65,9 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private var session: PendantSession? = null
     private var scanJob: Job? = null
     private var bondAttempted = false
+    private var syncJob: Job? = null
+    private val syncProgress = MutableStateFlow<SyncProgress?>(null)
+    val sync: StateFlow<SyncProgress?> = syncProgress
 
     fun startScan() {
         if (_state.value is State.Scanning) return
@@ -187,6 +201,108 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /** Read-only storage readout (GetDeviceStatus). Never touches recordings. */
+    suspend fun storageStatus(s: PendantSession): StorageView {
+        val st = s.getDeviceStatus().deviceStatus
+        val ss = st.storageState
+        return StorageView(
+            oldestPage = ss.oldestFlashPage.toInt(),
+            newestPage = ss.newestFlashPage.toInt(),
+            currentSession = ss.currentStorageSession.toInt(),
+            freeCapturePages = ss.freeCapturePages.toInt(),
+            totalCapturePages = ss.totalCapturePages.toInt(),
+            syncMode = st.syncModeValue,
+        )
+    }
+
+    /**
+     * READ-ONLY flash drain: switch the pendant to batch download, save every
+     * pushed page to app-private storage, then switch back to record-to-flash.
+     * NEVER acknowledges pages (no delete_flash_page), so the pendant keeps
+     * everything; this is the hard default of the project spec.
+     */
+    fun syncReadOnly() {
+        val s = session ?: return
+        val c = client ?: return
+        if (syncJob?.isActive == true) return
+        syncJob = scope.launch(Dispatchers.Main) {
+            var pages = 0
+            var frames = 0L
+            var bytes = 0L
+            var lastIdx = -1
+            var note = ""
+            try {
+                val ctx = getApplication<Application>()
+                val dir = java.io.File(ctx.filesDir, "flash_pages").apply { mkdirs() }
+                syncProgress.value = SyncProgress(0, 0, 0, -1, false, "starting download mode")
+                s.storageListener = { buf ->
+                    val page = buf.flashPage.toByteArray()
+                    if (page.isNotEmpty()) {
+                        val fp = FlashPageParser.fromStorageBuffer(
+                            buf.ingestTypeValue, buf.session, buf.run, buf.seq,
+                            buf.index, page)
+                        val f = java.io.File(dir, "page_%08d_session%d.bin".format(fp.index, fp.session))
+                        f.writeBytes(fp.rawPageBytes)
+                        pages++
+                        frames += fp.opusFrames.size
+                        bytes += fp.rawPageBytes.size
+                        lastIdx = fp.index
+                        syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, false,
+                            "page ${fp.index} (${fp.rawPageBytes.size} B, ${fp.opusFrames.size} frames)")
+                    }
+                }
+                s.beginBatchDownload()
+                // Idle timeout: 6s with nothing new means the flash is drained
+                // (reference uses 5s). While pages keep arriving, keep going.
+                var idle = 0
+                while (idle < 30) { // up to ~3 min of total silence
+                    kotlinx.coroutines.delay(200)
+                    val p0 = pages
+                    kotlinx.coroutines.delay(5800)
+                    if (pages == p0) idle++ else idle = 0
+                    if (idle >= 1) break // 6s of silence
+                }
+                try { s.stopBatchDownload() } catch (_: Exception) { /* link may drop */ }
+                note = "saved $pages pages, pendant copy untouched (no ack sent)"
+                syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true, note)
+            } catch (e: Exception) {
+                try { s.stopBatchDownload() } catch (_: Exception) {}
+                syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true,
+                    "stopped: ${e.message ?: e.javaClass.simpleName}. $pages pages kept, pendant copy untouched")
+            } finally {
+                s.storageListener = null
+                // re-read storage to prove nothing was freed
+                try {
+                    val st2 = storageStatus(s)
+                    note = "after sync: pendant flash now $st2.oldestPage..$st2.newestPage (unchanged = success)"
+                    syncProgress.value = syncProgress.value?.copy(note = note)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    /** One-shot storage readout, reported through the same status flow as sync. */
+    fun checkStorageNow() {
+        val s = session ?: return
+        if (syncJob?.isActive == true) return
+        syncJob = scope.launch(Dispatchers.Main) {
+            try {
+                val v = storageStatus(s)
+                val used = v.totalCapturePages - v.freeCapturePages
+                syncProgress.value = SyncProgress(0, 0, 0, -1, true,
+                    "flash: $used of ${v.totalCapturePages} capture pages used, session ${v.currentSession}, pages ${v.oldestPage}..${v.newestPage}")
+            } catch (e: Exception) {
+                syncProgress.value = SyncProgress(0, 0, 0, -1, true,
+                    "storage check failed: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun stopSync() {
+        syncJob?.cancel()
+        session?.let { try { kotlinx.coroutines.runBlocking { it.stopBatchDownload() } } catch (_: Exception) {} }
+    }
+
     fun disconnect() {
         session?.close(); session = null
         client?.disconnect("Disconnected")
@@ -195,6 +311,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        syncJob?.cancel()
         scope.cancel()
         session?.close()
         client?.release()

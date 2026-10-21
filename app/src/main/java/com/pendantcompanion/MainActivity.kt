@@ -83,14 +83,15 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
                 }
             }
             is Connecting -> CircularProgressIndicator()
-            is Connected -> DeviceInfoCard(s, onDisconnect = { vm.disconnect() })
+            is Connected -> DeviceInfoCard(s, vm, onDisconnect = { vm.disconnect() })
         }
     }
 }
 
 @Composable
-fun DeviceInfoCard(s: Connected, onDisconnect: () -> Unit) {
+fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit) {
     val i = s.info
+    val sync by vm.sync.collectAsState()
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -104,8 +105,25 @@ fun DeviceInfoCard(s: Connected, onDisconnect: () -> Unit) {
             }
         }
         Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button({ vm.checkStorageNow() }) { Text("Check storage") }
+            Button({ vm.syncReadOnly() }) { Text("Download flash") }
+        }
+        Spacer(Modifier.height(8.dp))
+        (sync as? PendantViewModel.SyncProgress)?.let { p ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(if (p.finished) "Sync finished" else "Syncing flash (read-only)...",
+                         style = MaterialTheme.typography.titleSmall)
+                    Text("Pages saved: ${p.pagesSaved}   Frames seen: ${p.framesSeen}   Bytes: ${p.bytesSaved / 1024} KB")
+                    if (p.lastPageIndex >= 0) Text("Last page index: ${p.lastPageIndex}")
+                    Text(p.note, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         Button(onDisconnect) { Text("Disconnect") }
-        Text("Nothing on the pendant was changed. Recording sync arrives in the next phase.",
+        Text("Read-only: pages are copied to this phone and the pendant keeps its copies (no acknowledge is sent).",
             style = MaterialTheme.typography.bodySmall)
     }
 }
