@@ -130,10 +130,11 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 override fun onNotify(data: ByteArray) { session?.onNotify(data) }
                 override fun onClosed(reason: String) {
+                    val diag = " [sent ${'$'}{c.writesSentCount()} writes, got ${'$'}{c.notifyCountTotal()} replies]"
                     session?.close(); session = null; client = null
-                    if (cont.isActive) cont.resume(reason) {}
+                    if (cont.isActive) cont.resume(reason + diag) {}
                     else if (_state.value !is State.Error && _state.value !is State.Idle) {
-                        _state.value = State.Error(reason)
+                        _state.value = State.Error(reason + diag)
                     }
                 }
             })

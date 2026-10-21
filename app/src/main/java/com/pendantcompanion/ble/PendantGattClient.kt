@@ -45,6 +45,11 @@ class PendantGattClient(
     private val handler = Handler(Looper.getMainLooper())
     @Volatile var negotiatedMtu: Int = 23
         private set
+    private val writesSent = java.util.concurrent.atomic.AtomicLong(0)
+    private val notifyCount = java.util.concurrent.atomic.AtomicLong(0)
+
+    fun writesSentCount(): Long = writesSent.get()
+    fun notifyCountTotal(): Long = notifyCount.get()
 
     fun connect(device: BluetoothDevice) {
         this.device = device
@@ -98,6 +103,7 @@ class PendantGattClient(
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         }
         ch.value = next
+        writesSent.incrementAndGet()
         if (!g.writeCharacteristic(ch)) {
             writing.set(false)
             closeGatt()
@@ -152,15 +158,7 @@ class PendantGattClient(
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    val d = device
-                    if (d != null && d.bondState != BluetoothDevice.BOND_BONDED && !bondRequested) {
-                        bondRequested = true
-                        startBond(d)
-                    } else {
-                        g.requestMtu(498)
-                    }
-                }
+                BluetoothProfile.STATE_CONNECTED -> g.requestMtu(498)
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     if (bondReconnecting) {
                         bondReconnecting = false
@@ -218,7 +216,15 @@ class PendantGattClient(
                 listener.onClosed("Subscription failed (status $status)")
                 return
             }
-            listener.onReady(negotiatedMtu)
+            val d = device
+            if (d != null && d.bondState != BluetoothDevice.BOND_BONDED && !bondRequested) {
+                // Mirror the verified reference order: MTU + discovery +
+                // subscription first, THEN bond over the live connection.
+                bondRequested = true
+                startBond(d)
+            } else {
+                listener.onReady(negotiatedMtu)
+            }
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
@@ -233,7 +239,10 @@ class PendantGattClient(
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
-            if (c.uuid == PendantUuids.NOTIFY) listener.onNotify(c.value ?: ByteArray(0))
+            if (c.uuid == PendantUuids.NOTIFY) {
+                notifyCount.incrementAndGet()
+                listener.onNotify(c.value ?: ByteArray(0))
+            }
         }
     }
 

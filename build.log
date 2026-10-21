@@ -23,16 +23,16 @@ Daemon will be stopped at the end of the build
 > Task :app:processDebugResources UP-TO-DATE
 
 > Task :app:compileDebugKotlin
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:100:12 'var value: ByteArray!' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:101:16 'fun writeCharacteristic(p0: BluetoothGattCharacteristic!): Boolean' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:125:28 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:208:18 'var value: ByteArray!' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:209:20 'fun writeDescriptor(p0: BluetoothGattDescriptor!): Boolean' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:236:68 'var value: ByteArray!' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:105:12 'var value: ByteArray!' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:107:16 'fun writeCharacteristic(p0: BluetoothGattCharacteristic!): Boolean' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:131:28 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:206:18 'var value: ByteArray!' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:207:20 'fun writeDescriptor(p0: BluetoothGattDescriptor!): Boolean' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:244:37 'var value: ByteArray!' is deprecated. Deprecated in Java.
 w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:128:49 'fun resume(value: String?, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:134:45 'fun resume(value: String?, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:149:27 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:152:89 'fun resume(value: Unit, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:135:45 'fun resume(value: String?, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:150:27 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:153:89 'fun resume(value: Unit, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
 
 > Task :app:javaPreCompileDebug UP-TO-DATE
 > Task :app:compileDebugJavaWithJavac UP-TO-DATE
@@ -53,7 +53,7 @@ w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantVi
 > Task :app:mergeDebugJniLibFolders UP-TO-DATE
 > Task :app:mergeDebugNativeLibs UP-TO-DATE
 > Task :app:stripDebugDebugSymbols UP-TO-DATE
-> Task :app:validateSigningDebug
+> Task :app:validateSigningDebug UP-TO-DATE
 > Task :app:writeDebugAppMetadata UP-TO-DATE
 > Task :app:writeDebugSigningConfigVersions UP-TO-DATE
 > Task :app:packageDebug
@@ -72,5 +72,5 @@ w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantVi
 > Task :app:processDebugUnitTestJavaRes UP-TO-DATE
 > Task :app:testDebugUnitTest
 
-BUILD SUCCESSFUL in 2m 20s
-49 actionable tasks: 10 executed, 39 up-to-date
+BUILD SUCCESSFUL in 1m 31s
+49 actionable tasks: 9 executed, 40 up-to-date
