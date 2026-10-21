@@ -1,0 +1,16 @@
+Pendant Companion
+
+This project incorporates material from the following sources:
+
+1. Protocol schema files in app/src/main/proto/ (common.proto, flash_page.proto,
+   shared.proto, server.proto, js.proto, native_comm.proto, real_time_audio.proto)
+   are from MAkcanca/pendant-cli, MIT License, Copyright (c) 2026 Mustafa Akcanca.
+   Source: https://github.com/MAkcanca/pendant-cli
+
+2. Protocol behaviour and the pendant-side crypto pipeline design follow
+   MAkcanca/pendant-cli (MIT, same copyright) and aldrinjenson/pendant-sync
+   (see refs for its licence), both verified against Limitless Pendant
+   firmware v1.1.20.
+
+"Limitless" and "Limitless Pendant" are trademarks of their respective owners;
+this is an independent, unofficial project not affiliated with Limitless.
