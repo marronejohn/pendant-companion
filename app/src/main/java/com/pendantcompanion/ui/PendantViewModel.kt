@@ -17,7 +17,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 
-/** Read-only connection state machine. Phase 2 never sends destructive commands. */
+/**
+ * Read-only connection state machine. Phase 2 never sends destructive commands.
+ *
+ * Connect flow: connect the GATT first, and only initiate OS bonding when the
+ * pendant rejects a command with an encryption/authorization status (5, 8 or 15).
+ * Forcing createBond() up front is rejected by some pendants that only accept
+ * bonding negotiated during an active GATT connection.
+ */
 class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     sealed interface State {
@@ -46,6 +53,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private var client: PendantGattClient? = null
     private var session: PendantSession? = null
     private var scanJob: Job? = null
+    private var bondAttempted = false
 
     fun startScan() {
         if (_state.value is State.Scanning) return
@@ -76,17 +84,61 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pairAndConnect(hit: PendantScanHit) {
         scanJob?.cancel()
+        bondAttempted = false
         val device = hit.device
         _state.value = State.Connecting(device.name ?: device.address)
         scope.launch(Dispatchers.Main) {
             try {
-                if (device.bondState != BluetoothDevice.BOND_BONDED) bond(device)
-                connectGatt(device)
+                var reason = connectAndInspect(device)
+                if (reason != null && needsBond(reason) && device.bondState != BluetoothDevice.BOND_BONDED && !bondAttempted) {
+                    bondAttempted = true
+                    _state.value = State.Connecting(device.name ?: device.address + " (pairing...)")
+                    bond(device)
+                    reason = connectAndInspect(device)
+                }
+                if (reason != null && _state.value !is State.Connected && _state.value !is State.Error) {
+                    _state.value = State.Error("Connection failed: $reason")
+                }
             } catch (e: Exception) {
                 _state.value = State.Error("Connection failed: ${e.message}")
             }
         }
     }
+
+    private fun needsBond(reason: String): Boolean =
+        reason.contains("status 5") || reason.contains("status 8") || reason.contains("status 15")
+
+    /** Returns null when connected and inspected; otherwise the failure reason. */
+    private suspend fun connectAndInspect(device: BluetoothDevice): String? =
+        suspendCancellableCoroutine { cont ->
+            val c = PendantGattClient(getApplication(), object : PendantGattClient.Listener {
+                override fun onReady(mtu: Int) {
+                    val s = PendantSession(client!!)
+                    session = s
+                    scope.launch(Dispatchers.Main) {
+                        var fail: String? = null
+                        try {
+                            val info = inspect(s)
+                            _state.value = State.Connected(device.name ?: device.address, info)
+                        } catch (e: Exception) {
+                            fail = "Connected, but device inspection failed: ${e.message}"
+                            _state.value = State.Error(fail!!)
+                        }
+                        if (cont.isActive) cont.resume(fail) {}
+                    }
+                }
+                override fun onNotify(data: ByteArray) { session?.onNotify(data) }
+                override fun onClosed(reason: String) {
+                    session?.close(); session = null; client = null
+                    if (cont.isActive) cont.resume(reason) {}
+                    else if (_state.value !is State.Error && _state.value !is State.Idle) {
+                        _state.value = State.Error(reason)
+                    }
+                }
+            })
+            client = c
+            c.connect(device)
+        }
 
     private suspend fun bond(device: BluetoothDevice) = suspendCancellableCoroutine { cont ->
         val app = getApplication<Application>()
@@ -110,32 +162,6 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             try { app.unregisterReceiver(receiver) } catch (_: Exception) {}
             cont.cancel(RuntimeException("Phone refused to start pairing"))
         }
-    }
-
-    private suspend fun connectGatt(device: BluetoothDevice) = suspendCancellableCoroutine { cont ->
-        val c = PendantGattClient(getApplication(), object : PendantGattClient.Listener {
-            override fun onReady(mtu: Int) {
-                val s = PendantSession(client!!)
-                session = s
-                scope.launch(Dispatchers.Main) {
-                    try {
-                        val info = inspect(s)
-                        _state.value = State.Connected(device.name ?: device.address, info)
-                    } catch (e: Exception) {
-                        _state.value = State.Error("Connected, but device inspection failed: ${e.message}")
-                    }
-                    if (cont.isActive) cont.resume(Unit) {}
-                }
-            }
-            override fun onNotify(data: ByteArray) { session?.onNotify(data) }
-            override fun onClosed(reason: String) {
-                session?.close(); session = null; client = null
-                if (_state.value !is State.Error) _state.value = State.Error(reason)
-                if (cont.isActive) cont.resume(Unit) {}
-            }
-        })
-        client = c
-        c.connect(device)
     }
 
     /**
