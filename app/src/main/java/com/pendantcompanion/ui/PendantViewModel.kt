@@ -437,8 +437,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
                              android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                getApplication<Application>()
-                    .startActivity(android.content.Intent.createChooser(share, "Export session $session"))
+                withContextMain {
+                    getApplication<Application>()
+                        .startActivity(android.content.Intent.createChooser(share, "Export session $session"))
+                }
                 _player.value = PlayerState.Idle
             } catch (e: Exception) {
                 _player.value = PlayerState.PlayerError("Export failed: ${e.message ?: e.javaClass.simpleName}")

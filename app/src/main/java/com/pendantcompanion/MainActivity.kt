@@ -24,6 +24,11 @@ import com.pendantcompanion.ui.PendantViewModel.State.Idle
 import com.pendantcompanion.ui.PendantViewModel.State.ScanResults
 import com.pendantcompanion.ui.PendantViewModel.State.Scanning
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
@@ -75,8 +80,28 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants -> if (grants.values.all { it }) vm.startScan() }
 
+    val enableBt = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { }
+    val btAdapter = remember {
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+    }
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Pendant Companion", style = MaterialTheme.typography.headlineMedium)
+        if (btAdapter != null && !btAdapter.isEnabled) {
+            Spacer(Modifier.height(8.dp))
+            Card(Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.BluetoothDisabled, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Bluetooth is off. Turn it on to find the pendant.",
+                         Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    IconButton({ enableBt.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) }) {
+                        Icon(Icons.Filled.Bluetooth, contentDescription = "Turn on Bluetooth")
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Text(
             when (val s = state) {
@@ -163,6 +188,10 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(if (p.finished) "Sync finished" else "Syncing flash (read-only)...",
                          style = MaterialTheme.typography.titleSmall)
+                    LinearProgressIndicator(
+                        progress = { if (p.finished) 1f else 0.05f },
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    )
                     Text("Pages saved: ${p.pagesSaved}   Frames seen: ${p.framesSeen}   Bytes: ${p.bytesSaved / 1024} KB")
                     if (p.lastPageIndex >= 0) Text("Last page index: ${p.lastPageIndex}")
                     Text(p.note, style = MaterialTheme.typography.bodySmall)
@@ -180,6 +209,7 @@ fun SessionsCard(vm: PendantViewModel) {
     val sessions by vm.sessions.collectAsState()
     val player by vm.player.collectAsState()
     val sync by vm.sync.collectAsState()
+    val trans by vm.trans.collectAsState()
     LaunchedEffect(Unit) { vm.refreshSessions() }
     LaunchedEffect((sync as? PendantViewModel.SyncProgress)?.finished) {
         if ((sync as? PendantViewModel.SyncProgress)?.finished == true) vm.refreshSessions()
@@ -207,23 +237,37 @@ fun SessionsCard(vm: PendantViewModel) {
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
-                            Button({ vm.playSession(sess.session) }) { Text(if (playing) "Stop" else "Play") }
-                            Spacer(Modifier.width(6.dp))
-                            Button({ vm.exportSession(sess.session) }) { Text("WAV") }
-                            Spacer(Modifier.width(6.dp))
-                            Button({ vm.shareTranscript(sess.session) },
-                                   enabled = vm.transcriptFile(sess.session).exists()) { Text("TXT") }
-                            Spacer(Modifier.width(6.dp))
-                            Button({ vm.transcribeSession(sess.session) },
-                                   enabled = vm.model.value.path != null) { Text("TR") }
+                            val hasTranscript = remember(sess.session) { vm.transcriptFile(sess.session).exists() }
+                            IconButton({ vm.playSession(sess.session) },
+                                       enabled = player !is PendantViewModel.PlayerState.Decoding) {
+                                Icon(if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                                     contentDescription = if (playing) "Stop" else "Play")
+                            }
+                            IconButton({ vm.exportSession(sess.session) },
+                                       enabled = player !is PendantViewModel.PlayerState.Decoding) {
+                                Icon(Icons.Filled.Save, contentDescription = "Export WAV")
+                            }
+                            IconButton({ vm.shareTranscript(sess.session) }, enabled = hasTranscript) {
+                                Icon(Icons.Filled.Description, contentDescription = "Share transcript")
+                            }
+                            IconButton({ vm.transcribeSession(sess.session) },
+                                       enabled = vm.model.value.path != null &&
+                                           trans !is PendantViewModel.TransState.Running) {
+                                Icon(Icons.Filled.GraphicEq, contentDescription = "Transcribe")
+                            }
                         }
                     }
                 }
             }
             when (val ps = player) {
-                is PendantViewModel.PlayerState.Decoding ->
+                is PendantViewModel.PlayerState.Decoding -> {
+                    LinearProgressIndicator(
+                        progress = { if (ps.total <= 0) 0f else ps.done.toFloat() / ps.total },
+                        Modifier.fillMaxWidth().padding(top = 4.dp),
+                    )
                     Text("Decoding session ${ps.session}: ${ps.done}/${ps.total} packets",
                          style = MaterialTheme.typography.bodySmall)
+                }
                 is PendantViewModel.PlayerState.Playing ->
                     Text("Playing session ${ps.session}", style = MaterialTheme.typography.bodySmall)
                 is PendantViewModel.PlayerState.PlayerError ->
@@ -254,8 +298,10 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                 Button(onClick = onPickModel) { Text("Replace model") }
             }
             when (val t = trans) {
-                is PendantViewModel.TransState.Running ->
+                is PendantViewModel.TransState.Running -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text("Session ${t.session}: ${t.note}", style = MaterialTheme.typography.bodySmall)
+                }
                 is PendantViewModel.TransState.Done ->
                     Text("Session ${t.session} transcribed (${t.text.length} chars). Use TXT to view or share.",
                          style = MaterialTheme.typography.bodySmall)
