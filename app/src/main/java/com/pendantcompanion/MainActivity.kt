@@ -83,12 +83,10 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
     val enableBt = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { }
-    val btAdapter = remember {
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
-    }
+    val btOn by vm.btOn.collectAsState()
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Pendant Companion", style = MaterialTheme.typography.headlineMedium)
-        if (btAdapter != null && !btAdapter.isEnabled) {
+        if (!btOn) {
             Spacer(Modifier.height(8.dp))
             Card(Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -106,7 +104,7 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
         Text(
             when (val s = state) {
                 is Idle -> "No pendant connected"
-                is Scanning -> "Scanning for your LS-PT-01..."
+                is Scanning -> "Scanning for your LS-PT-01... (wake the pendant if its light is off)"
                 is ScanResults -> "${s.hits.size} pendant candidate(s) found"
                 is Connecting -> "Connecting to ${s.deviceName}..."
                 is Connected -> "Connected: ${s.deviceName}"
@@ -114,6 +112,11 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
             },
             style = MaterialTheme.typography.bodyMedium,
         )
+        if (state is PendantViewModel.State.Scanning ||
+            state is PendantViewModel.State.Connecting) {
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
         Spacer(Modifier.height(16.dp))
 
         when (val s = state) {
@@ -238,10 +241,26 @@ fun SessionsCard(vm: PendantViewModel) {
                                 )
                             }
                             val hasTranscript = remember(sess.session) { vm.transcriptFile(sess.session).exists() }
+                            val paused = player is PendantViewModel.PlayerState.Paused &&
+                                (player as PendantViewModel.PlayerState.Paused).session == sess.session
                             IconButton({ vm.playSession(sess.session) },
                                        enabled = player !is PendantViewModel.PlayerState.Decoding) {
-                                Icon(if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                                     contentDescription = if (playing) "Stop" else "Play")
+                                Icon(
+                                    when {
+                                        playing -> Icons.Filled.Pause
+                                        paused -> Icons.Filled.PlayArrow
+                                        else -> Icons.Filled.PlayArrow
+                                    },
+                                    contentDescription = when {
+                                        playing -> "Pause"
+                                        paused -> "Resume"
+                                        else -> "Play"
+                                    })
+                            }
+                            if (paused) {
+                                IconButton({ vm.stopPlayback() }) {
+                                    Icon(Icons.Filled.Stop, contentDescription = "Stop")
+                                }
                             }
                             IconButton({ vm.exportSession(sess.session) },
                                        enabled = player !is PendantViewModel.PlayerState.Decoding) {

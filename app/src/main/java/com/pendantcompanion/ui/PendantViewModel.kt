@@ -3,6 +3,13 @@ package com.pendantcompanion.ui
 import android.app.Application
 import android.bluetooth.BluetoothDevice
 import androidx.lifecycle.AndroidViewModel
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
 import com.pendantcompanion.ble.PendantGattClient
 import com.pendantcompanion.ble.PendantScanHit
 import com.pendantcompanion.ble.PendantScanner
@@ -73,6 +80,29 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private val syncProgress = MutableStateFlow<SyncProgress?>(null)
     val sync: StateFlow<SyncProgress?> = syncProgress
 
+    /** Live Bluetooth on/off state, updated by a system broadcast receiver. */
+    private val _btOn = MutableStateFlow(btAdapterNow() ?: false)
+    val btOn: StateFlow<Boolean> = _btOn
+    private val btReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            if (intent.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                _btOn.value = btAdapterNow() ?: false
+            }
+        }
+    }
+
+    private fun btAdapterNow(): Boolean? =
+        (getApplication<Application>().getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
+            ?.adapter?.let { it.isEnabled }
+
+    init {
+        ContextCompat.registerReceiver(
+            getApplication(), btReceiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+    }
+
     /** One pendant recording session found among the saved flash pages. */
     data class SessionInfo(
         val session: Int, val pages: Int, val frames: Long, val durationSec: Long,
@@ -85,6 +115,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         object Idle : PlayerState
         data class Decoding(val session: Int, val done: Int, val total: Int) : PlayerState
         data class Playing(val session: Int) : PlayerState
+        data class Paused(val session: Int) : PlayerState
         data class PlayerError(val message: String) : PlayerState
     }
 
@@ -95,6 +126,11 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     fun startScan() {
         if (_state.value is State.Scanning) return
+        val bt = btAdapterNow()
+        if (bt == false) {
+            _state.value = State.Error("Bluetooth is off. Turn it on, then tap Find my pendant again.")
+            return
+        }
         _state.value = State.Scanning
         scanner = scanner ?: PendantScanner(getApplication())
         val hits = mutableListOf<PendantScanHit>()
@@ -368,7 +404,17 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     /** Decode (once) and play a recording session. Tap again to stop. */
     fun playSession(session: Int) {
         val current = _player.value
-        if (current is PlayerState.Playing && current.session == session) { stopPlayback(); return }
+        if (current is PlayerState.Playing && current.session == session) {
+            // pause, keep position
+            try { mediaPlayer?.pause() } catch (_: Exception) {}
+            _player.value = PlayerState.Paused(session)
+            return
+        }
+        if (current is PlayerState.Paused && current.session == session) {
+            try { mediaPlayer?.start() } catch (_: Exception) {}
+            _player.value = PlayerState.Playing(session)
+            return
+        }
         if (decodeJob?.isActive == true) return
         stopPlayback()
         decodeJob = scope.launch(Dispatchers.IO) {
