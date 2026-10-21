@@ -140,6 +140,11 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             Button({ vm.syncReadOnly() }) { Text("Download flash") }
         }
         Spacer(Modifier.height(8.dp))
+        val pickModel = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri -> uri?.let { vm.importModel(it) } }
+        WhisperCard(vm, onPickModel = { pickModel.launch(arrayOf("*/*")) })
+        Spacer(Modifier.height(8.dp))
         SessionsCard(vm)
         Spacer(Modifier.height(8.dp))
         val ctx = LocalContext.current
@@ -205,6 +210,12 @@ fun SessionsCard(vm: PendantViewModel) {
                             Button({ vm.playSession(sess.session) }) { Text(if (playing) "Stop" else "Play") }
                             Spacer(Modifier.width(6.dp))
                             Button({ vm.exportSession(sess.session) }) { Text("WAV") }
+                            Spacer(Modifier.width(6.dp))
+                            Button({ vm.shareTranscript(sess.session) },
+                                   enabled = vm.transcriptFile(sess.session).exists()) { Text("TXT") }
+                            Spacer(Modifier.width(6.dp))
+                            Button({ vm.transcribeSession(sess.session) },
+                                   enabled = vm.model.value.path != null) { Text("TR") }
                         }
                     }
                 }
@@ -217,6 +228,39 @@ fun SessionsCard(vm: PendantViewModel) {
                     Text("Playing session ${ps.session}", style = MaterialTheme.typography.bodySmall)
                 is PendantViewModel.PlayerState.PlayerError ->
                     Text(ps.message, color = MaterialTheme.colorScheme.error,
+                         style = MaterialTheme.typography.bodySmall)
+                else -> {}
+            }
+        }
+    }
+}
+@Composable
+fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
+    val model by vm.model.collectAsState()
+    val trans by vm.trans.collectAsState()
+    LaunchedEffect(Unit) { vm.refreshModelInfo() }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("On-device transcription (Whisper)", style = MaterialTheme.typography.titleMedium)
+            val mp = model.path
+            if (mp == null) {
+                Text("No model loaded. Pick a ggml .bin Whisper model file (no internet needed).",
+                     style = MaterialTheme.typography.bodySmall)
+                Button(onClick = onPickModel) { Text("Load model file") }
+            } else {
+                Text("Model: ${mp.substringAfterLast('/')} (${model.sizeBytes / 1_000_000} MB)" +
+                     if (model.ready) " — ready" else "",
+                     style = MaterialTheme.typography.bodySmall)
+                Button(onClick = onPickModel) { Text("Replace model") }
+            }
+            when (val t = trans) {
+                is PendantViewModel.TransState.Running ->
+                    Text("Session ${t.session}: ${t.note}", style = MaterialTheme.typography.bodySmall)
+                is PendantViewModel.TransState.Done ->
+                    Text("Session ${t.session} transcribed (${t.text.length} chars). Use TXT to view or share.",
+                         style = MaterialTheme.typography.bodySmall)
+                is PendantViewModel.TransState.TransError ->
+                    Text(t.message, color = MaterialTheme.colorScheme.error,
                          style = MaterialTheme.typography.bodySmall)
                 else -> {}
             }

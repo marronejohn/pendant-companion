@@ -8,6 +8,7 @@ import com.pendantcompanion.ble.PendantScanHit
 import com.pendantcompanion.ble.PendantScanner
 import com.pendantcompanion.protocol.FlashPageParser
 import com.pendantcompanion.protocol.OpusDecoder
+import com.pendantcompanion.protocol.WhisperBridge
 import com.pendantcompanion.protocol.PendantSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -445,6 +446,143 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    sealed interface TransState {
+        object Idle : TransState
+        data class Running(val session: Int, val note: String) : TransState
+        data class Done(val session: Int, val text: String) : TransState
+        data class TransError(val session: Int, val message: String) : TransState
+    }
+
+    private val _trans = MutableStateFlow<TransState>(TransState.Idle)
+    val trans: StateFlow<TransState> = _trans
+    private var transJob: Job? = null
+
+    data class ModelInfo(val path: String?, val sizeBytes: Long, val ready: Boolean)
+    private val _model = MutableStateFlow(ModelInfo(null, 0L, false))
+    val model: StateFlow<ModelInfo> = _model
+
+    private fun modelFile(): java.io.File {
+        val saved = getApplication<Application>()
+            .getSharedPreferences("pendant", android.content.Context.MODE_PRIVATE)
+            .getString("whisper_model_path", null)
+        return if (saved != null) java.io.File(saved)
+               else java.io.File(java.io.File(getApplication<Application>().filesDir, "whisper"), "model.bin")
+    }
+
+    fun refreshModelInfo() {
+        val f = modelFile()
+        if (f.exists() && f.length() > 10_000_000) {
+            _model.value = ModelInfo(f.absolutePath, f.length(), _model.value.ready)
+        }
+    }
+
+    /** Copies a user-picked ggml .bin into app storage and loads it natively. */
+    fun importModel(uri: android.net.Uri) {
+        if (transJob?.isActive == true) return
+        transJob = scope.launch(Dispatchers.IO) {
+            try {
+                val dir = java.io.File(getApplication<Application>().filesDir, "whisper").apply { mkdirs() }
+                val dst = java.io.File(dir, "model.bin")
+                val src = getApplication<Application>().contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected file")
+                src.use { ins -> dst.outputStream().use { ins.copyTo(it) } }
+                if (dst.length() < 10_000_000) {
+                    dst.delete()
+                    throw IllegalStateException("That file is too small to be a Whisper model (${dst.length()} bytes)")
+                }
+                getApplication<Application>()
+                    .getSharedPreferences("pendant", android.content.Context.MODE_PRIVATE)
+                    .edit().putString("whisper_model_path", dst.absolutePath).commit()
+                val ok = WhisperBridge.nativeInit(dst.absolutePath)
+                _model.value = ModelInfo(dst.absolutePath, dst.length(), ok)
+                if (!ok) {
+                    _trans.value = TransState.TransError(-1, "Whisper did not load that file; is it a ggml .bin model?")
+                }
+            } catch (e: Exception) {
+                _trans.value = TransState.TransError(-1, "Model import failed: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun transcribeSession(session: Int) {
+        if (transJob?.isActive == true) return
+        transJob = scope.launch(Dispatchers.Default) {
+            try {
+                val mf = modelFile()
+                if (!mf.exists() || mf.length() < 10_000_000) {
+                    _trans.value = TransState.TransError(session, "No Whisper model loaded. Tap Load model file first.")
+                    return@launch
+                }
+                _trans.value = TransState.Running(session, "decoding audio")
+                val wav = decodeSessionWav(session)
+                _trans.value = TransState.Running(session, "loading Whisper model")
+                if (!WhisperBridge.nativeInit(mf.absolutePath)) {
+                    throw IllegalStateException("Whisper failed to load the model file")
+                }
+                _model.value = _model.value.copy(ready = true)
+                _trans.value = TransState.Running(session, "transcribing; a few minutes for a long session")
+                val samples = wavToSamples(wav)
+                val text = WhisperBridge.nativeTranscribe(samples, 4)
+                if (text == null || text.isBlank()) {
+                    throw IllegalStateException("Whisper returned no text")
+                }
+                val tf = transcriptFile(session)
+                tf.writeText(text)
+                _trans.value = TransState.Done(session, text)
+            } catch (e: Exception) {
+                _trans.value = TransState.TransError(session, "Transcription failed: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun transcriptFile(session: Int): java.io.File =
+        java.io.File(
+            java.io.File(getApplication<Application>().filesDir, "transcripts").apply { mkdirs() },
+            "session_$session.txt",
+        )
+
+    fun shareTranscript(session: Int) {
+        val f = transcriptFile(session)
+        if (!f.exists()) return
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            getApplication(), "com.pendantcompanion.fileprovider", f)
+        val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                     android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        getApplication<Application>()
+            .startActivity(android.content.Intent.createChooser(share, "Transcript session $session"))
+    }
+
+    private suspend fun decodeSessionWav(session: Int): java.io.File {
+        val out = wavFileFor(session)
+        if (out.exists() && out.length() > 44L) return out
+        val packets = collectPackets(session)
+        if (packets.isEmpty()) throw IllegalStateException("No audio frames found for session $session")
+        val jobCtx = kotlinx.coroutines.currentCoroutineContext()
+        OpusDecoder.decodeToWav(packets, out, { jobCtx.isActive }, { _, _ -> })
+        return out
+    }
+
+    /** 48 kHz 16-bit WAV -> 16 kHz float samples (simple 3:1 box filter). */
+    private fun wavToSamples(wav: java.io.File): FloatArray {
+        val bytes = wav.readBytes()
+        val start = 44
+        val n = (bytes.size - start) / 6
+        val out = FloatArray(n)
+        var bi = start
+        for (i in 0 until n) {
+            val s0 = ((bytes[bi].toInt() and 0xff) or (bytes[bi + 1].toInt() shl 8)).toShort().toInt()
+            val s1 = ((bytes[bi + 2].toInt() and 0xff) or (bytes[bi + 3].toInt() shl 8)).toShort().toInt()
+            val s2 = ((bytes[bi + 4].toInt() and 0xff) or (bytes[bi + 5].toInt() shl 8)).toShort().toInt()
+            out[i] = ((s0 + s1 + s2) / 3f) / 32768f
+            bi += 6
+        }
+        return out
+    }
+
     fun stopPlayback() {
         decodeJob?.cancel(); decodeJob = null
         val mp = mediaPlayer; mediaPlayer = null
@@ -471,6 +609,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         stopPlayback()
+        transJob?.cancel()
+        WhisperBridge.nativeFree()
         syncJob?.cancel()
         scope.cancel()
         session?.close()
