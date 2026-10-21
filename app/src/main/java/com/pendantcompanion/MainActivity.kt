@@ -24,6 +24,36 @@ import com.pendantcompanion.ui.PendantViewModel.State.Idle
 import com.pendantcompanion.ui.PendantViewModel.State.ScanResults
 import com.pendantcompanion.ui.PendantViewModel.State.Scanning
 import androidx.activity.compose.rememberLauncherForActivityResult
+import android.content.Intent
+import android.net.Uri
+import androidx.core.content.FileProvider
+import java.io.File
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
+fun exportFlashPages(context: android.content.Context): Int {
+    val dir = File(context.filesDir, "flash_pages")
+    val files = dir.listFiles()?.sortedBy { it.name } ?: emptyList()
+    if (files.isEmpty()) return 0
+    val outDir = File(context.filesDir, "exports").apply { mkdirs() }
+    val out = File(outDir, "pendant_flash_pages.zip")
+    ZipOutputStream(FileOutputStream(out)).use { zos ->
+        files.forEach { f ->
+            zos.putNextEntry(ZipEntry(f.name))
+            f.inputStream().use { it.copyTo(zos) }
+            zos.closeEntry()
+        }
+    }
+    val uri: Uri = FileProvider.getUriForFile(context, "com.pendantcompanion.fileprovider", out)
+    val share = Intent(Intent.ACTION_SEND).apply {
+        type = "application/zip"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(share, "Export flash pages"))
+    return files.size
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -108,6 +138,17 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button({ vm.checkStorageNow() }) { Text("Check storage") }
             Button({ vm.syncReadOnly() }) { Text("Download flash") }
+        }
+        Spacer(Modifier.height(8.dp))
+        val ctx = LocalContext.current
+        var exportedCount by remember { mutableStateOf(-1) }
+        Button({ exportedCount = exportFlashPages(ctx) }) { Text("Export pages") }
+        if (exportedCount >= 0) {
+            Text(
+                if (exportedCount == 0) "Nothing to export yet: no pages saved on this phone."
+                else "Zipped $exportedCount page files. Pick Gmail in the share sheet to send them.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         Spacer(Modifier.height(8.dp))
         (sync as? PendantViewModel.SyncProgress)?.let { p ->
