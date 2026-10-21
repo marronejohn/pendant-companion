@@ -170,12 +170,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
      * handshake (SetCurrentTime only, no recordings touched) and retry once.
      */
     private suspend fun inspect(s: PendantSession): DeviceInfoView {
-        val info = try {
-            s.getDeviceInfo().deviceInfo
-        } catch (e: Exception) {
-            s.setCurrentTime()
-            s.getDeviceInfo().deviceInfo
-        }
+        // Verified handshake order (cli.py runs SetCurrentTime before any query;
+        // some firmware will not answer queries until the clock is set).
+        s.setCurrentTime()
+        val info = s.getDeviceInfo().deviceInfo
         return DeviceInfoView(
             serial = info.serialNum,
             firmware = info.firmwareVer,
@@ -197,6 +195,6 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         scope.cancel()
         session?.close()
-        client?.disconnect("App closed")
+        client?.release()
     }
 }

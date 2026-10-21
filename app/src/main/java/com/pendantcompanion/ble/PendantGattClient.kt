@@ -1,43 +1,65 @@
 package com.pendantcompanion.ble
 
 import android.bluetooth.*
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Owns one GATT connection to the pendant. The pendant is NOT a headset:
- * no audio profiles, no automatic streaming. We discover the verified service,
- * negotiate a large MTU, subscribe to notifications on 632de003 and write
- * to 632de002. Writes are serialized: Android requires waiting for each
- * onCharacteristicWrite before issuing the next.
+ * Owns one GATT connection to the pendant. Ported from the verified reference
+ * (MAkcanca/pendant-cli ble.py):
+ *
+ * - The pendant requires an encrypted/authenticated link before it accepts
+ *   writes to 632de002 (otherwise GATT error 5, Insufficient Authentication).
+ *   Bonding happens WHILE the connection is open, then we reconnect so the
+ *   stack brings the link up encrypted. Standalone createBond() without a
+ *   connection is refused by the pendant.
+ * - Write mode follows the characteristic's actual properties (some builds
+ *   expose only write-without-response).
+ * - Writes are serialized; with write-without-response a short fallback timer
+ *   keeps the queue moving when no callback arrives.
  */
 class PendantGattClient(
     private val context: Context,
     private val listener: Listener,
 ) {
     interface Listener {
-        /** Services discovered, notifications enabled, MTU negotiated. */
         fun onReady(mtu: Int)
         fun onNotify(data: ByteArray)
         fun onClosed(reason: String)
     }
 
     private var gatt: BluetoothGatt? = null
+    private var device: BluetoothDevice? = null
     private val writeQueue = ArrayDeque<ByteArray>()
     private val writing = AtomicBoolean(false)
     private var closed = false
+    private var bondRequested = false
+    private var bondReconnecting = false
+    private var bondReceiver: BroadcastReceiver? = null
+    private val handler = Handler(Looper.getMainLooper())
     @Volatile var negotiatedMtu: Int = 23
         private set
 
     fun connect(device: BluetoothDevice) {
+        this.device = device
         closed = false
-        val g = if (Build.VERSION.SDK_INT >= 23) {
+        gatt = if (Build.VERSION.SDK_INT >= 23) {
             device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         } else {
             device.connectGatt(context, false, callback)
         }
-        gatt = g
+    }
+
+    private fun reconnect() {
+        val d = device ?: return
+        closed = false
+        gatt = d.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
     }
 
     fun send(data: ByteArray): Boolean {
@@ -67,11 +89,25 @@ class PendantGattClient(
             listener.onClosed("Write characteristic missing; connection unusable")
             return
         }
+        val noResponse =
+            (ch.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) == 0 &&
+            (ch.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
+        ch.writeType = if (noResponse) {
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        } else {
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        }
         ch.value = next
         if (!g.writeCharacteristic(ch)) {
             writing.set(false)
             closeGatt()
             listener.onClosed("GATT write rejected by the stack")
+            return
+        }
+        if (noResponse) {
+            handler.postDelayed({
+                if (writing.compareAndSet(true, false)) drain()
+            }, 120)
         }
     }
 
@@ -82,11 +118,54 @@ class PendantGattClient(
         gatt = null
     }
 
+    private fun startBond(d: BluetoothDevice) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                if (i.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+                val dd = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+                if (dd.address != d.address) return
+                when (dd.bondState) {
+                    BluetoothDevice.BOND_BONDED -> {
+                        context.unregisterReceiver(this); bondReceiver = null
+                        // Reconnect so the stack brings the link up encrypted.
+                        bondReconnecting = true
+                        closeGatt()
+                        handler.postDelayed({ reconnect() }, 300)
+                    }
+                    BluetoothDevice.BOND_NONE -> {
+                        context.unregisterReceiver(this); bondReceiver = null
+                        closeGatt()
+                        listener.onClosed("Pendant refused pairing (bond rejected)")
+                    }
+                }
+            }
+        }
+        bondReceiver = receiver
+        context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+        if (!d.createBond()) {
+            context.unregisterReceiver(receiver); bondReceiver = null
+            closeGatt()
+            listener.onClosed("Phone refused to start pairing")
+        }
+    }
+
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> g.requestMtu(498)
+                BluetoothProfile.STATE_CONNECTED -> {
+                    val d = device
+                    if (d != null && d.bondState != BluetoothDevice.BOND_BONDED && !bondRequested) {
+                        bondRequested = true
+                        startBond(d)
+                    } else {
+                        g.requestMtu(498)
+                    }
+                }
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    if (bondReconnecting) {
+                        bondReconnecting = false
+                        return
+                    }
                     val reason = "Disconnected (status $status)"
                     closeGatt()
                     listener.onClosed(reason)
@@ -156,5 +235,11 @@ class PendantGattClient(
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
             if (c.uuid == PendantUuids.NOTIFY) listener.onNotify(c.value ?: ByteArray(0))
         }
+    }
+
+    fun release() {
+        bondReceiver?.let { try { context.unregisterReceiver(it) } catch (_: Exception) {} }
+        bondReceiver = null
+        closeGatt()
     }
 }
