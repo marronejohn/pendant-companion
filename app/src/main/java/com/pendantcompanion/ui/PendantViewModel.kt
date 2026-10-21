@@ -114,6 +114,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             val c = PendantGattClient(getApplication(), object : PendantGattClient.Listener {
                 override fun onReady(mtu: Int) {
                     val s = PendantSession(client!!)
+                    s.onBleReady(mtu)
                     session = s
                     scope.launch(Dispatchers.Main) {
                         var fail: String? = null
