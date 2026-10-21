@@ -199,6 +199,8 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         Spacer(Modifier.height(8.dp))
         SearchCard(vm)
         Spacer(Modifier.height(8.dp))
+        LedCard(vm)
+        Spacer(Modifier.height(8.dp))
         val pickModel = rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri -> uri?.let { vm.importModel(it) } }
@@ -442,6 +444,26 @@ fun SearchCard(vm: PendantViewModel) {
                     },
                 )
             }
+        }
+    }
+}
+@Composable
+fun LedCard(vm: PendantViewModel) {
+    val led by vm.led.collectAsState()
+    LaunchedEffect(Unit) { vm.refreshLedBrightness() }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Pendant LED", style = MaterialTheme.typography.titleMedium)
+            Text(
+                led.reported?.let { "Pendant reports LED brightness: $it" } ?: "Pendant has not reported an LED brightness yet.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row {
+                Button(enabled = !led.busy, onClick = { vm.setLedBrightness(3, "Dim LED") }) { Text("Almost off") }
+                Spacer(Modifier.width(10.dp))
+                Button(enabled = !led.busy, onClick = { vm.setLedBrightness(255, "Restore LED") }) { Text("Full") }
+            }
+            led.note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }

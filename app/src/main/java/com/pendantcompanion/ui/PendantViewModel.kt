@@ -17,6 +17,7 @@ import com.pendantcompanion.protocol.FlashPageParser
 import com.pendantcompanion.protocol.OpusDecoder
 import com.pendantcompanion.protocol.WhisperBridge
 import com.pendantcompanion.protocol.PendantSession
+import limitless.server.Server
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -548,6 +549,64 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         data class Running(val session: Int, val note: String) : TransState
         data class Done(val session: Int, val text: String) : TransState
         data class TransError(val session: Int, val message: String) : TransState
+    }
+
+
+    // ----- pendant LED brightness -----
+    // SetLEDBrightness (ServerCommandMsg field 26) exists in the protocol but
+    // this is its first use against real hardware, so every write is followed
+    // by a GetDeviceStatus read-back and the card shows what actually stuck.
+
+    data class LedState(
+        val reported: Int? = null,
+        val note: String? = null,
+        val busy: Boolean = false,
+    )
+
+    private val _led = MutableStateFlow(LedState())
+    val led: StateFlow<LedState> = _led
+
+    /** Ask the pendant for its current status and surface the LED brightness. */
+    fun refreshLedBrightness() {
+        val s = session ?: return
+        _led.value = _led.value.copy(busy = true)
+        scope.launch(Dispatchers.IO) {
+            try {
+                val resp = s.getDeviceStatus()
+                val reported = if (resp.hasDeviceStatus()) resp.deviceStatus.ledBrightness else null
+                withContextMain { _led.value = LedState(reported = reported, note = _led.value.note, busy = false) }
+            } catch (e: Exception) {
+                withContextMain { _led.value = _led.value.copy(busy = false, note = "Could not read LED brightness: ${e.message}") }
+            }
+        }
+    }
+
+    /** Send a brightness value, then read it back so the card shows the truth. */
+    fun setLedBrightness(value: Int, label: String) {
+        val s = session ?: return
+        _led.value = _led.value.copy(busy = true)
+        scope.launch(Dispatchers.IO) {
+            try {
+                s.sendOneway {
+                    it.setLedBrightness = Server.SetLEDBrightness.newBuilder()
+                        .setBrightness(value).build()
+                }
+                kotlinx.coroutines.delay(400)
+                val reported = try {
+                    val resp = s.getDeviceStatus()
+                    if (resp.hasDeviceStatus()) resp.deviceStatus.ledBrightness else null
+                } catch (_: Exception) { null }
+                withContextMain {
+                    _led.value = LedState(
+                        reported = reported,
+                        note = "$label sent; pendant reports brightness ${reported ?: "?"}",
+                        busy = false,
+                    )
+                }
+            } catch (e: Exception) {
+                withContextMain { _led.value = _led.value.copy(busy = false, note = "LED command failed: ${e.message}") }
+            }
+        }
     }
 
     private val _trans = MutableStateFlow<TransState>(TransState.Idle)
