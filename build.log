@@ -21,18 +21,17 @@ Daemon will be stopped at the end of the build
 > Task :app:processDebugManifest UP-TO-DATE
 > Task :app:processDebugManifestForPackage UP-TO-DATE
 > Task :app:processDebugResources UP-TO-DATE
-
 > Task :app:compileDebugKotlin
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:105:12 'var value: ByteArray!' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:107:16 'fun writeCharacteristic(p0: BluetoothGattCharacteristic!): Boolean' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:131:28 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:206:18 'var value: ByteArray!' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:207:20 'fun writeDescriptor(p0: BluetoothGattDescriptor!): Boolean' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:244:37 'var value: ByteArray!' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:128:49 'fun resume(value: String?, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:135:45 'fun resume(value: String?, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:150:27 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
-w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:153:89 'fun resume(value: Unit, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:116:12 'var value: ByteArray!' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:118:16 'fun writeCharacteristic(p0: BluetoothGattCharacteristic!): Boolean' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:142:28 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:217:18 'var value: ByteArray!' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:219:20 'fun writeDescriptor(p0: BluetoothGattDescriptor!): Boolean' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ble/PendantGattClient.kt:258:27 'var value: ByteArray!' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:129:49 'fun resume(value: String?, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:136:45 'fun resume(value: String?, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:151:27 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
+w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantViewModel.kt:154:89 'fun resume(value: Unit, onCancellation: ((@ParameterName(...) Throwable) -> Unit)?): Unit' is deprecated. Use the overload that also accepts the `value` and the coroutine context in lambda.
 
 > Task :app:javaPreCompileDebug UP-TO-DATE
 > Task :app:compileDebugJavaWithJavac UP-TO-DATE
@@ -72,5 +71,5 @@ w: file:///workspace/pendant/app/src/main/java/com/pendantcompanion/ui/PendantVi
 > Task :app:processDebugUnitTestJavaRes UP-TO-DATE
 > Task :app:testDebugUnitTest
 
-BUILD SUCCESSFUL in 1m 31s
+BUILD SUCCESSFUL in 1m 45s
 49 actionable tasks: 9 executed, 40 up-to-date

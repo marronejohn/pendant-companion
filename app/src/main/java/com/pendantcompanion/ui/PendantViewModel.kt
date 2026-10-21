@@ -100,7 +100,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     _state.value = State.Error("Connection failed: $reason")
                 }
             } catch (e: Exception) {
-                _state.value = State.Error("Connection failed: ${e.message}")
+                val diag = client?.diagnostics() ?: ""
+                _state.value = State.Error("Connection failed: ${e.message} $diag")
             }
         }
     }
@@ -130,7 +131,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 override fun onNotify(data: ByteArray) { session?.onNotify(data) }
                 override fun onClosed(reason: String) {
-                    val diag = " [sent ${'$'}{c.writesSentCount()} writes, got ${'$'}{c.notifyCountTotal()} replies]"
+                    val diag = " " + (client?.diagnostics() ?: "")
                     session?.close(); session = null; client = null
                     if (cont.isActive) cont.resume(reason + diag) {}
                     else if (_state.value !is State.Error && _state.value !is State.Idle) {

@@ -51,6 +51,17 @@ class PendantGattClient(
     fun writesSentCount(): Long = writesSent.get()
     fun notifyCountTotal(): Long = notifyCount.get()
 
+    @Volatile private var lastNotifyHex: String = ""
+    @Volatile private var lastWriteStatus: Int = Int.MIN_VALUE
+    @Volatile private var cccdStatus: Int = Int.MIN_VALUE
+
+    fun diagnostics(): String {
+        val last = if (lastWriteStatus == Int.MIN_VALUE) "n/a" else lastWriteStatus.toString()
+        val cccd = if (cccdStatus == Int.MIN_VALUE) "n/a" else cccdStatus.toString()
+        val reply = if (lastNotifyHex.isEmpty()) "" else ", last reply " + lastNotifyHex
+        return "sent " + writesSent.get() + " writes (last status " + last + "), got " + notifyCount.get() + " replies" + reply + " [notify-sub status " + cccd + "]"
+    }
+
     fun connect(device: BluetoothDevice) {
         this.device = device
         closed = false
@@ -204,6 +215,7 @@ class PendantGattClient(
                 return
             }
             cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            cccdStatus = -99
             if (!g.writeDescriptor(cccd)) {
                 closeGatt()
                 listener.onClosed("Could not subscribe to pendant notifications")
@@ -211,6 +223,7 @@ class PendantGattClient(
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
+            cccdStatus = status
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 closeGatt()
                 listener.onClosed("Subscription failed (status $status)")
@@ -228,10 +241,11 @@ class PendantGattClient(
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
+            lastWriteStatus = status
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 writing.set(false)
                 closeGatt()
-                listener.onClosed("Write failed (status $status)")
+                listener.onClosed("Write failed (status $status). " + diagnostics())
                 return
             }
             writing.set(false)
@@ -241,7 +255,9 @@ class PendantGattClient(
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
             if (c.uuid == PendantUuids.NOTIFY) {
                 notifyCount.incrementAndGet()
-                listener.onNotify(c.value ?: ByteArray(0))
+                val v = c.value ?: ByteArray(0)
+                if (v.isNotEmpty()) lastNotifyHex = v.take(12).joinToString("") { "%02x".format(it) }
+                listener.onNotify(v)
             }
         }
     }
