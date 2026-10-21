@@ -7,6 +7,7 @@ import com.pendantcompanion.ble.PendantGattClient
 import com.pendantcompanion.ble.PendantScanHit
 import com.pendantcompanion.ble.PendantScanner
 import com.pendantcompanion.protocol.FlashPageParser
+import com.pendantcompanion.protocol.OpusDecoder
 import com.pendantcompanion.protocol.PendantSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +17,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
@@ -68,6 +71,26 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private var syncJob: Job? = null
     private val syncProgress = MutableStateFlow<SyncProgress?>(null)
     val sync: StateFlow<SyncProgress?> = syncProgress
+
+    /** One pendant recording session found among the saved flash pages. */
+    data class SessionInfo(
+        val session: Int, val pages: Int, val frames: Long, val durationSec: Long,
+    )
+
+    private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList())
+    val sessions: StateFlow<List<SessionInfo>> = _sessions
+
+    sealed interface PlayerState {
+        object Idle : PlayerState
+        data class Decoding(val session: Int, val done: Int, val total: Int) : PlayerState
+        data class Playing(val session: Int) : PlayerState
+        data class PlayerError(val message: String) : PlayerState
+    }
+
+    private val _player = MutableStateFlow<PlayerState>(PlayerState.Idle)
+    val player: StateFlow<PlayerState> = _player
+    private var mediaPlayer: android.media.MediaPlayer? = null
+    private var decodeJob: Job? = null
 
     fun startScan() {
         if (_state.value is State.Scanning) return
@@ -298,12 +321,148 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun flashPagesDir(): java.io.File =
+        java.io.File(getApplication<Application>().filesDir, "flash_pages")
+
+    private fun wavFileFor(session: Int): java.io.File =
+        java.io.File(
+            java.io.File(getApplication<Application>().filesDir, "exports").apply { mkdirs() },
+            "session_$session.wav",
+        )
+
+    /** Groups the saved flash pages into recording sessions (no pendant contact). */
+    fun refreshSessions() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val dir = flashPagesDir()
+                val bySess = sortedMapOf<Int, LongArray>() // session -> [pages, frames]
+                dir.listFiles()?.forEach { f ->
+                    val m = Regex("page_(\\d+)_session(\\d+)\\.bin").matchEntire(f.name)
+                        ?: return@forEach
+                    val sess = m.groupValues[2].toInt()
+                    val frames = FlashPageParser.extractOpusFrames(f.readBytes()).size.toLong()
+                    val cur = bySess[sess] ?: longArrayOf(0, 0)
+                    cur[0] += 1; cur[1] += frames
+                    bySess[sess] = cur
+                }
+                val list = bySess.map { (sess, pf) ->
+                    SessionInfo(sess, pf[0].toInt(), pf[1], pf[1] * 20 / 1000)
+                }.sortedBy { it.session }
+                _sessions.value = list
+            } catch (e: Exception) {
+                _player.value = PlayerState.PlayerError("Could not list recordings: ${e.message}")
+            }
+        }
+    }
+
+    private fun collectPackets(session: Int): List<ByteArray> {
+        val out = mutableListOf<ByteArray>()
+        flashPagesDir().listFiles()
+            ?.filter { it.name.endsWith("_session$session.bin") }
+            ?.sortedBy { it.name }
+            ?.forEach { out.addAll(FlashPageParser.extractOpusFrames(it.readBytes())) }
+        return out
+    }
+
+    /** Decode (once) and play a recording session. Tap again to stop. */
+    fun playSession(session: Int) {
+        val current = _player.value
+        if (current is PlayerState.Playing && current.session == session) { stopPlayback(); return }
+        if (decodeJob?.isActive == true) return
+        stopPlayback()
+        decodeJob = scope.launch(Dispatchers.IO) {
+            try {
+                val out = wavFileFor(session)
+                if (!out.exists() || out.length() <= 44L) {
+                    val packets = collectPackets(session)
+                    if (packets.isEmpty()) {
+                        _player.value = PlayerState.PlayerError("No audio frames found for session $session")
+                        return@launch
+                    }
+                    _player.value = PlayerState.Decoding(session, 0, packets.size)
+                    val jobCtx = kotlinx.coroutines.currentCoroutineContext()
+                    OpusDecoder.decodeToWav(
+                        packets, out,
+                        keepGoing = { jobCtx.isActive },
+                        onProgress = { done, total -> _player.value = PlayerState.Decoding(session, done, total) },
+                    )
+                }
+                ensureActive()
+                withContextMain {
+                    val mp = android.media.MediaPlayer()
+                    mp.setDataSource(out.absolutePath)
+                    mp.prepare()
+                    mp.setOnCompletionListener {
+                        _player.value = PlayerState.Idle
+                        try { it.release() } catch (_: Exception) {}
+                        if (mediaPlayer === it) mediaPlayer = null
+                    }
+                    mp.start()
+                    mediaPlayer = mp
+                    _player.value = PlayerState.Playing(session)
+                }
+            } catch (e: Exception) {
+                _player.value = PlayerState.PlayerError("Playback failed: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** Decode (if needed) and open the share sheet for the session WAV. */
+    fun exportSession(session: Int) {
+        if (decodeJob?.isActive == true) return
+        decodeJob = scope.launch(Dispatchers.IO) {
+            try {
+                val out = wavFileFor(session)
+                if (!out.exists() || out.length() <= 44L) {
+                    val packets = collectPackets(session)
+                    if (packets.isEmpty()) {
+                        _player.value = PlayerState.PlayerError("No audio frames found for session $session")
+                        return@launch
+                    }
+                    _player.value = PlayerState.Decoding(session, 0, packets.size)
+                    val jobCtx = kotlinx.coroutines.currentCoroutineContext()
+                    OpusDecoder.decodeToWav(
+                        packets, out,
+                        keepGoing = { jobCtx.isActive },
+                        onProgress = { done, total -> _player.value = PlayerState.Decoding(session, done, total) },
+                    )
+                }
+                ensureActive()
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    getApplication(), "com.pendantcompanion.fileprovider", out)
+                val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                    type = "audio/wav"
+                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                             android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                getApplication<Application>()
+                    .startActivity(android.content.Intent.createChooser(share, "Export session $session"))
+                _player.value = PlayerState.Idle
+            } catch (e: Exception) {
+                _player.value = PlayerState.PlayerError("Export failed: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun stopPlayback() {
+        decodeJob?.cancel(); decodeJob = null
+        val mp = mediaPlayer; mediaPlayer = null
+        try { mp?.stop() } catch (_: Exception) {}
+        try { mp?.release() } catch (_: Exception) {}
+        _player.value = PlayerState.Idle
+    }
+
+    private suspend fun withContextMain(block: suspend () -> Unit) =
+        kotlinx.coroutines.withContext(Dispatchers.Main.immediate) { block() }
+
     fun stopSync() {
         syncJob?.cancel()
         session?.let { try { kotlinx.coroutines.runBlocking { it.stopBatchDownload() } } catch (_: Exception) {} }
     }
 
     fun disconnect() {
+        stopPlayback()
         session?.close(); session = null
         client?.disconnect("Disconnected")
         client = null
@@ -311,6 +470,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        stopPlayback()
         syncJob?.cancel()
         scope.cancel()
         session?.close()

@@ -7,7 +7,9 @@ import java.io.ByteArrayOutputStream
  * (official app LimitlessProtocol.kt, unit-tested against its golden fixtures).
  *
  * A flash page payload = optional field-1 varint (pendant-clock timestamp_ms),
- * then 0x1a audio wrappers each containing 0x12 audio-data fields with Opus frames.
+ * then 0x1a audio wrappers each containing 0x12 audio-data fields; each
+ * audio-data content is a nested protobuf whose field 4 (tag 0x22) is the bare
+ * Opus packet (verified against hardware flash: TOC uniformly 0xb8, CELT WB).
  * Audio pages that yield zero frames are treated as parse failures upstream; here
  * we surface counts so the UI can show what happened without ever acknowledging
  * (acknowledging is what frees/deletes pages, and phase 3 never acknowledges).
@@ -89,7 +91,7 @@ object FlashPageParser {
                 if (tag == 0x12) {
                     val (len, after) = varintAt(page, p); p = after
                     if (len > 0 && p + len.toInt() <= wrapperEnd) {
-                        frames.add(page.copyOfRange(p, p + len.toInt()))
+                        frames.add(unwrapOpus(page.copyOfRange(p, p + len.toInt())))
                     }
                     p += len.toInt()
                 } else if (tag == 0x1a) {
@@ -107,6 +109,14 @@ object FlashPageParser {
             p = wrapperEnd
         }
         return frames
+    }
+
+    private fun unwrapOpus(content: ByteArray): ByteArray {
+        if (content.size >= 2 && content[0].toInt() == 0x22) {
+            val (l, q) = varintAt(content, 1)
+            if (q + l.toInt() == content.size) return content.copyOfRange(q, q + l.toInt())
+        }
+        return content
     }
 
     fun fromStorageBuffer(ingestType: Int, session: Int, run: Int, seq: Long,

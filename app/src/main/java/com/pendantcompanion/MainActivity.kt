@@ -140,6 +140,8 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             Button({ vm.syncReadOnly() }) { Text("Download flash") }
         }
         Spacer(Modifier.height(8.dp))
+        SessionsCard(vm)
+        Spacer(Modifier.height(8.dp))
         val ctx = LocalContext.current
         var exportedCount by remember { mutableStateOf(-1) }
         Button({ exportedCount = exportFlashPages(ctx) }) { Text("Export pages") }
@@ -166,5 +168,58 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         Button(onDisconnect) { Text("Disconnect") }
         Text("Read-only: pages are copied to this phone and the pendant keeps its copies (no acknowledge is sent).",
             style = MaterialTheme.typography.bodySmall)
+    }
+}
+@Composable
+fun SessionsCard(vm: PendantViewModel) {
+    val sessions by vm.sessions.collectAsState()
+    val player by vm.player.collectAsState()
+    val sync by vm.sync.collectAsState()
+    LaunchedEffect(Unit) { vm.refreshSessions() }
+    LaunchedEffect((sync as? PendantViewModel.SyncProgress)?.finished) {
+        if ((sync as? PendantViewModel.SyncProgress)?.finished == true) vm.refreshSessions()
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Recordings on this phone", style = MaterialTheme.typography.titleMedium)
+            if (sessions.isEmpty()) {
+                Text("Nothing saved yet. Tap Download flash first.",
+                     style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text("${sessions.size} recording sessions",
+                     style = MaterialTheme.typography.bodySmall)
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
+                    items(sessions) { sess ->
+                        val playing = player is PendantViewModel.PlayerState.Playing &&
+                            (player as PendantViewModel.PlayerState.Playing).session == sess.session
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Session ${sess.session}", style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    "${sess.pages} pages · ${sess.frames} frames · " +
+                                        "~${sess.durationSec / 60}m ${sess.durationSec % 60}s",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            Button({ vm.playSession(sess.session) }) { Text(if (playing) "Stop" else "Play") }
+                            Spacer(Modifier.width(6.dp))
+                            Button({ vm.exportSession(sess.session) }) { Text("WAV") }
+                        }
+                    }
+                }
+            }
+            when (val ps = player) {
+                is PendantViewModel.PlayerState.Decoding ->
+                    Text("Decoding session ${ps.session}: ${ps.done}/${ps.total} packets",
+                         style = MaterialTheme.typography.bodySmall)
+                is PendantViewModel.PlayerState.Playing ->
+                    Text("Playing session ${ps.session}", style = MaterialTheme.typography.bodySmall)
+                is PendantViewModel.PlayerState.PlayerError ->
+                    Text(ps.message, color = MaterialTheme.colorScheme.error,
+                         style = MaterialTheme.typography.bodySmall)
+                else -> {}
+            }
+        }
     }
 }
