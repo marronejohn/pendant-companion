@@ -1,14 +1,14 @@
 package com.pendantcompanion.ble
 
 import com.google.protobuf.InvalidProtocolBufferException
-import limitless.common.BLEMessageFromPendantToNative
+import limitless.common.Common
 
 /**
- * Reassembles BLEMessageFromPendantToNative fragments into complete payloads.
+ * Reassembles Common.BLEMessageFromPendantToNative fragments into complete payloads.
  *
  * Pendant-side framing (verified against MAkcanca/pendant-cli, which verified
  * against the pendant firmware): each fragment is a
- * BLEMessageFromPendantToNative { index=1, ble_fragment_seq=2 (0..N-1),
+ * Common.BLEMessageFromPendantToNative { index=1, ble_fragment_seq=2 (0..N-1),
  * num_fragments=3, payload=4 }. Fragments of one message share the same
  * `index`; the message is complete when ble_fragment_seq + 1 == num_fragments.
  * Out-of-order fragments are buffered; malformed input is rejected, never
@@ -34,7 +34,7 @@ class FragmentAssembler(private val maxPending: Int = 8) {
 
     private val pending = HashMap<Int, Pending>()
 
-    fun offer(msg: BLEMessageFromPendantToNative): Result {
+    fun offer(msg: Common.BLEMessageFromPendantToNative): Result {
         val index = msg.index
         val seq = msg.bleFragmentSeq
         val num = msg.numFragments
@@ -65,16 +65,17 @@ class FragmentAssembler(private val maxPending: Int = 8) {
 
     fun reset() = pending.clear()
 
-    private fun Collection<Int>.joinToByteArray(parts: Map<Int, ByteArray>): ByteArray {
-        val buffers = map { parts[it]!! }
-        val total = buffers.sumOf { it.size }
-        val out = ByteArray(total)
-        var pos = 0
-        for (b in buffers) { b.copyInto(out, pos); pos += b.size }
-        return out
-    }
 
     /** Decode a reassembled payload as protobuf, for callers that want the typed message. */
-    fun decodeComplete(payload: ByteArray): BLEMessageFromPendantToNative? =
-        try { BLEMessageFromPendantToNative.parseFrom(payload) } catch (e: InvalidProtocolBufferException) { null }
+    fun decodeComplete(payload: ByteArray): Common.BLEMessageFromPendantToNative? =
+        try { Common.BLEMessageFromPendantToNative.parseFrom(payload) } catch (e: InvalidProtocolBufferException) { null }
+}
+
+private fun Iterable<Int>.joinToByteArray(parts: Map<Int, ByteArray>): ByteArray {
+    val buffers = map { parts[it]!! }
+    val total = buffers.sumOf { it.size }
+    val out = ByteArray(total)
+    var pos = 0
+    for (b in buffers) { b.copyInto(out, pos); pos += b.size }
+    return out
 }

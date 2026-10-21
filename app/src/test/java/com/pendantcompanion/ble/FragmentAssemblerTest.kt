@@ -1,13 +1,13 @@
 package com.pendantcompanion.ble
 
-import limitless.common.BLEMessageFromPendantToNative
+import limitless.common.Common
 import org.junit.Assert.*
 import org.junit.Test
 
 class FragmentAssemblerTest {
 
     private fun frag(index: Int, seq: Int, num: Int, payload: ByteArray) =
-        BLEMessageFromPendantToNative.newBuilder()
+        Common.BLEMessageFromPendantToNative.newBuilder()
             .setIndex(index).setBleFragmentSeq(seq).setNumFragments(num)
             .setPayload(com.google.protobuf.ByteString.copyFrom(payload))
             .build()
