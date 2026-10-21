@@ -157,7 +157,10 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
 fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit) {
     val i = s.info
     val sync by vm.sync.collectAsState()
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Device information (read-only)", style = MaterialTheme.typography.titleMedium)
@@ -194,14 +197,14 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             }
         }
         Spacer(Modifier.height(8.dp))
+        SearchCard(vm)
+        Spacer(Modifier.height(8.dp))
         val pickModel = rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri -> uri?.let { vm.importModel(it) } }
         WhisperCard(vm, onPickModel = { pickModel.launch(arrayOf("*/*")) })
         Spacer(Modifier.height(8.dp))
         SessionsCard(vm)
-        Spacer(Modifier.height(8.dp))
-        SearchCard(vm)
         Spacer(Modifier.height(8.dp))
         val ctx = LocalContext.current
         var exportedCount by remember { mutableStateOf(-1) }
