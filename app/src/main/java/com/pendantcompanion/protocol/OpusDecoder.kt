@@ -1,57 +1,33 @@
 package com.pendantcompanion.protocol
 
-import android.media.MediaCodec
-import android.media.MediaFormat
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
-import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Raw Opus packet -> 16-bit mono PCM WAV, using the platform OPUS decoder
- * (MediaCodec in async mode). No native dependencies, no network. Packets are
- * the bare Opus packets carried inside flash-page audio-data fields (TOC 0xb8,
- * CELT wideband, 20 ms). Async mode feeds and drains continuously, which is
- * orders of magnitude faster than one packet per sync round-trip.
+ * Raw Opus packets -> 16-bit mono PCM WAV, decoded with bundled libopus
+ * (xiph 1.5.2, BSD-3-Clause) via OpusNative. The pendant's flash audio is
+ * CELT-mode Opus (TOC 0xb8, 20 ms frames, 48 kHz mono output). Packets are
+ * the bare Opus packets carried inside flash-page audio-data fields.
  *
- * Resilience: the stream is decoded in chunks, each with its own codec
- * instance. One malformed frame can raise a fatal CodecException; a chunk
- * that dies is skipped and counted, and decoding continues with the next
- * chunk, so a bad stretch costs at most ~10 s of audio instead of the whole
- * export or playback.
+ * Resilience: each packet decodes independently; a packet libopus rejects
+ * is skipped and counted and decoding continues, so bad stretches cost only
+ * the affected 20 ms frames instead of the whole export or playback.
  */
 object OpusDecoder {
     const val SAMPLE_RATE = 48000
     const val FRAME_MS = 20
 
-    /** Packets per decode chunk (512 x 20 ms = ~10 s of audio). */
-    private const val CHUNK = 512
+    /** Largest single Opus packet PCM: 120 ms at 48 kHz. */
+    private const val MAX_PCM = 5760
 
-    /** Standard OpusHead identification header, 19 bytes, mono 48 kHz. */
-    private fun opusHead(): ByteArray {
-        val b = ByteArray(19)
-        "OpusHead".toByteArray().copyInto(b, 0)
-        b[8] = 1 // version
-        b[9] = 1 // channel count
-        // pre-skip = 0 (LE16)
-        b[10] = 0; b[11] = 0
-        // input sample rate 48000 (LE32)
-        b[12] = 0x50.toByte(); b[13] = 0xBB.toByte(); b[14] = 0x00.toByte(); b[15] = 0x00.toByte()
-        // output gain 0 (LE16), mapping family 0
-        b[16] = 0; b[17] = 0; b[18] = 0
-        return b
-    }
+    /** Packets between progress callbacks (512 x 20 ms = ~10 s). */
+    private const val PROGRESS_EVERY = 512
 
     /**
      * Decodes [packets] into a WAV at [out]. [keepGoing] is polled as a
      * cooperative cancel check. Returns decoded sample count. [onSkipped]
-     * reports each skipped packet range with the codec's failure reason.
+     * reports each skipped packet with the decoder's reason.
      */
     fun decodeToWav(
         packets: List<ByteArray>,
@@ -65,24 +41,38 @@ object OpusDecoder {
         var written = 0L
         var skipped = 0
         var firstFailure: String? = null
-        FileOutputStream(tmp).use { fos ->
-            fos.write(ByteArray(44)) // WAV header patched in place after decoding
-            var start = 0
-            while (start < packets.size) {
-                if (!keepGoing()) break
-                val end = minOf(start + CHUNK, packets.size)
-                val (bytes, failure) = decodeChunkInto(packets.subList(start, end), fos, keepGoing)
-                written += bytes // a failed chunk's partial PCM is real audio up to the failure point
-                if (failure == null) {
-                    // chunk fully decoded
-                } else {
-                    skipped += end - start
-                    if (firstFailure == null) firstFailure = failure
-                    onSkipped(end - start, failure)
+        val handle = OpusNative.nativeCreate(SAMPLE_RATE, 1)
+        if (handle == 0L) throw IllegalStateException("decoder unavailable (native init failed)")
+        try {
+            FileOutputStream(tmp).use { fos ->
+                fos.write(ByteArray(44)) // WAV header patched in place after decoding
+                val leBuf = ByteArray(2 * MAX_PCM)
+                packets.forEachIndexed { i, p ->
+                    if (!keepGoing()) return@forEachIndexed
+                    val pcm = OpusNative.nativeDecode(handle, p)
+                    if (pcm == null) {
+                        skipped++
+                        val reason = "packet ${i + 1} rejected by decoder"
+                        if (firstFailure == null) firstFailure = reason
+                        onSkipped(1, reason)
+                    } else {
+                        val n = pcm.size
+                        if (n > 0) {
+                            for (j in 0 until n) {
+                                leBuf[2 * j] = (pcm[j].toInt() and 0xff).toByte()
+                                leBuf[2 * j + 1] = ((pcm[j].toInt() shr 8) and 0xff).toByte()
+                            }
+                            fos.write(leBuf, 0, 2 * n)
+                            written += 2L * n
+                        }
+                    }
+                    if (i % PROGRESS_EVERY == PROGRESS_EVERY - 1 || i == packets.size - 1) {
+                        onProgress(i + 1, packets.size)
+                    }
                 }
-                onProgress(end, packets.size)
-                start = end
             }
+        } finally {
+            OpusNative.nativeFree(handle)
         }
         if (!keepGoing()) throw IllegalStateException("decode cancelled")
         if (written == 0L) {
@@ -116,6 +106,9 @@ object OpusDecoder {
             tmp.copyTo(out, overwrite = true)
             tmp.delete()
         }
+        if (skipped > 0) {
+            // carried forward so callers see the count even without a listener
+        }
         return dataSize / 2
     }
 
@@ -143,107 +136,5 @@ object OpusDecoder {
         val first = packets.take(3).joinToString(" ") { "0x%02x".format(it[0].toInt() and 0xff) }
         return ("packets=${packets.size}, sizes ${min}..${max} avg ${sum / packets.size}, " +
             "first bytes $first, TOC 0xb8: $b8/${packets.size}, 0x22-wrapped: $w22/${packets.size}")
-    }
-
-    /**
-     * Decodes one chunk into [fos] with a dedicated codec instance. Returns
-     * the bytes written, plus the failure reason when the chunk died (a
-     * CodecException is usually fatal to the codec instance).
-     */
-    private fun decodeChunkInto(
-        chunk: List<ByteArray>,
-        fos: FileOutputStream,
-        keepGoing: () -> Boolean,
-    ): Pair<Long, String?> {
-        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, SAMPLE_RATE, 1)
-        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 65536)
-        format.setByteBuffer("csd-0", ByteBuffer.wrap(opusHead()))
-        val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS)
-        val failure = AtomicReference<String?>(null)
-        val eosQueued = AtomicBoolean(false)
-        val feedingDone = AtomicBoolean(false)
-        val queue = ConcurrentLinkedQueue<Pair<Int, ByteArray>>()
-        val writtenBytes = AtomicLong(0L)
-        val latch = CountDownLatch(1)
-        try {
-            codec.setCallback(object : MediaCodec.Callback() {
-                override fun onInputBufferAvailable(c: MediaCodec, index: Int) {
-                    try {
-                        if (failure.get() != null) return
-                        val item = queue.poll()
-                        if (item == null) {
-                            if (feedingDone.get() && eosQueued.compareAndSet(false, true)) {
-                                val ib = c.getInputBuffer(index)!!
-                                ib.clear()
-                                c.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            }
-                            return
-                        }
-                        val (i, p) = item
-                        val ib = c.getInputBuffer(index)!!
-                        ib.clear()
-                        ib.put(p)
-                        c.queueInputBuffer(index, 0, p.size, i.toLong() * 20_000L, 0)
-                    } catch (e: Exception) {
-                        failure.compareAndSet(null, "input: ${e.message}")
-                        latch.countDown()
-                    }
-                }
-
-                override fun onOutputBufferAvailable(c: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                    try {
-                        val ob = c.getOutputBuffer(index)!!
-                        if (info.size > 0) {
-                            val out = ByteArray(info.size)
-                            ob.position(info.offset)
-                            ob.get(out)
-                            synchronized(fos) { fos.write(out) }
-                            writtenBytes.addAndGet(info.size.toLong())
-                        }
-                        c.releaseOutputBuffer(index, false)
-                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) latch.countDown()
-                    } catch (e: Exception) {
-                        failure.compareAndSet(null, "output: ${e.message}")
-                        latch.countDown()
-                    }
-                }
-
-                override fun onOutputFormatChanged(c: MediaCodec, f: MediaFormat) {}
-
-                override fun onError(c: MediaCodec, e: MediaCodec.CodecException) {
-                    failure.compareAndSet(null, e.message ?: "codec error")
-                    latch.countDown()
-                }
-            })
-            codec.configure(format, null, null, 0)
-            codec.start()
-            chunk.forEachIndexed { i, p -> queue.add(i to p) }
-            feedingDone.set(true)
-            // await with cancel + stall watchdog
-            var last = -1L
-            var stallTicks = 0
-            while (!latch.await(200, TimeUnit.MILLISECONDS)) {
-                if (!keepGoing()) {
-                    failure.compareAndSet(null, "cancelled")
-                    latch.countDown()
-                    break
-                }
-                val w = writtenBytes.get()
-                stallTicks = if (w == last) stallTicks + 1 else 0
-                if (stallTicks > 150) { // ~30 s with no output at all
-                    failure.compareAndSet(null, "decoder stalled")
-                    latch.countDown()
-                    break
-                }
-                last = w
-            }
-            val fail = failure.get()
-                ?: if (writtenBytes.get() == 0L) "decoder produced no output for this chunk" else null
-            if (fail != null) return writtenBytes.get() to fail
-        } finally {
-            try { codec.stop() } catch (_: Exception) {}
-            try { codec.release() } catch (_: Exception) {}
-        }
-        return writtenBytes.get() to null
     }
 }

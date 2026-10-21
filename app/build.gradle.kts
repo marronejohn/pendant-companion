@@ -14,7 +14,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.4.3"
+        versionName = "0.4.4"
         ndk { abiFilters += "arm64-v8a" }
     }
     externalNativeBuild {
@@ -24,7 +24,12 @@ android {
         }
     }
     buildTypes {
-        release { isMinifyEnabled = false }
+        release {
+            isMinifyEnabled = false
+            // installable without a release key: debug-keystore signing, same
+            // package John already sideloads
+            signingConfig = signingConfigs.getByName("debug")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

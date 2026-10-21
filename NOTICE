@@ -14,3 +14,4 @@ This project incorporates material from the following sources:
 
 "Limitless" and "Limitless Pendant" are trademarks of their respective owners;
 this is an independent, unofficial project not affiliated with Limitless.
+- libopus 1.5.2 (xiph.org), BSD-3-Clause: bundled and built from source for pendant audio decoding.
