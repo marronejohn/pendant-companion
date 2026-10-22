@@ -453,6 +453,31 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                      if (model.ready) " — ready" else "",
                      style = MaterialTheme.typography.bodySmall)
                 Button(onClick = onPickModel) { Text("Replace model") }
+                Spacer(Modifier.height(4.dp))
+                val b by vm.batch.collectAsState()
+                Button(onClick = { vm.transcribeAllSessions() }, enabled = b == null) {
+                    Text("Transcribe all sessions")
+                }
+                b?.let { bt ->
+                    if (bt.total > 0) {
+                        LinearProgressIndicator(
+                            progress = { bt.done.toFloat() / bt.total },
+                            Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Text(
+                        when {
+                            bt.note == "finished" ->
+                                "Finished: ${bt.done} of ${bt.total} transcripts ready, ${bt.failed} failed. Use Export transcripts only to zip them all."
+                            bt.note.isBlank() ->
+                                "Batch: ${bt.done} of ${bt.total} done; session ${bt.session} up next"
+                            else ->
+                                "Batch: ${bt.done} of ${bt.total} done; session ${bt.session} ${bt.note}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(onClick = { vm.stopBatch() }) { Text("Stop batch") }
+                }
             }
             when (val t = trans) {
                 is PendantViewModel.TransState.Running -> {

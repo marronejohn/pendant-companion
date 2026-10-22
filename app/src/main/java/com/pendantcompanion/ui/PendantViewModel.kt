@@ -802,6 +802,66 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ----- batch transcription: every session that holds audio, one tap -----
+    data class BatchProgress(
+        val done: Int, val total: Int, val session: Int, val failed: Int, val note: String,
+    )
+
+    private val _batch = MutableStateFlow<BatchProgress?>(null)
+    val batch: StateFlow<BatchProgress?> = _batch
+    private var batchJob: Job? = null
+
+    /**
+     * Transcribe every saved session that holds audio, oldest first, without
+     * tapping each one. Sessions that already have a transcript are skipped,
+     * so the batch can be re-run to pick up where it left off.
+     */
+    fun transcribeAllSessions() {
+        if (batchJob?.isActive == true || transJob?.isActive == true) return
+        batchJob = scope.launch(Dispatchers.Default) {
+            try {
+                val mf = modelFile()
+                if (!mf.exists() || mf.length() < 10_000_000) {
+                    _trans.value = TransState.TransError(-1, "No Whisper model loaded. Tap Load model file first.")
+                    return@launch
+                }
+                if (!WhisperBridge.nativeInit(mf.absolutePath)) {
+                    throw IllegalStateException("Whisper failed to load the model file")
+                }
+                _model.value = _model.value.copy(ready = true)
+                val targets = _sessions.value.filter { it.frames > 0 }.sortedBy { it.session }
+                if (targets.isEmpty()) { _batch.value = null; return@launch }
+                var done = 0
+                var failed = 0
+                for (s in targets) {
+                    if (transcriptFile(s.session).exists()) { done++; continue }
+                    try {
+                        _batch.value = BatchProgress(done, targets.size, s.session, failed, "decoding audio")
+                        val wav = decodeSessionWav(s.session)
+                        _batch.value = BatchProgress(done, targets.size, s.session, failed, "transcribing")
+                        val samples = wavToSamples(wav)
+                        val text = WhisperBridge.nativeTranscribe(samples, 4)
+                        if (text.isNullOrBlank()) throw IllegalStateException("Whisper returned no text")
+                        transcriptFile(s.session).writeText(text)
+                        done++
+                    } catch (e: Exception) {
+                        failed++
+                    }
+                    _batch.value = BatchProgress(done, targets.size, s.session, failed, "")
+                }
+                _batch.value = BatchProgress(done, targets.size, -1, failed, "finished")
+            } catch (e: Exception) {
+                _batch.value = null
+                _trans.value = TransState.TransError(-1, "Batch transcription failed: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun stopBatch() {
+        batchJob?.cancel()
+        _batch.value = null
+    }
+
     /** One transcript match: session, the [mm:ss] stamp of the first hit, and matching lines. */
     data class SearchHit(val session: Int, val stamp: String, val snippet: String)
     data class SearchState(val query: String, val hits: List<SearchHit>, val searched: Boolean)
