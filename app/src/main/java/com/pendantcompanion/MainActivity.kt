@@ -252,6 +252,8 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         Spacer(Modifier.height(8.dp))
         AckCard(vm)
         Spacer(Modifier.height(8.dp))
+        StorageCard(vm)
+        Spacer(Modifier.height(8.dp))
         val pickModel = rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri -> uri?.let { vm.importModel(it) } }
@@ -552,6 +554,45 @@ fun AckCard(vm: PendantViewModel) {
                     "A backup zip is rebuilt after every acknowledged sync; keep a copy of it outside the phone.",
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+    }
+}
+
+@Composable
+fun StorageCard(vm: PendantViewModel) {
+    val st by vm.storageView.collectAsState()
+    val note by vm.storageNote.collectAsState()
+    LaunchedEffect(Unit) { vm.refreshStorage() }
+    var confirming by remember { mutableStateOf(false) }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Pendant storage", style = MaterialTheme.typography.titleMedium)
+            val s = st
+            if (s == null) {
+                Text("Connect to read the pendant's storage.", style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text("${s.freeCapturePages} of ${s.totalCapturePages} capture pages free", style = MaterialTheme.typography.bodySmall)
+                if (s.totalCapturePages > 0) {
+                    val used = (s.totalCapturePages - s.freeCapturePages).coerceAtLeast(0) / s.totalCapturePages.toFloat()
+                    LinearProgressIndicator(progress = { used }, Modifier.fillMaxWidth())
+                    val hoursFree = s.freeCapturePages * 35.0 / s.totalCapturePages
+                    Text("about " + "%.1f".format(hoursFree) + " hours of recording space left", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Button(
+                enabled = s != null,
+                onClick = {
+                    if (!confirming) confirming = true
+                    else { confirming = false; vm.eraseSyncedPages() }
+                },
+            ) {
+                Text(if (confirming) "Tap again to erase pages already saved on this phone" else "Free space (erase pages already saved here)")
+            }
+            Text(
+                "Only pages this phone already holds are erased; unsynced recordings stay on the pendant. Acknowledge mode does this automatically after each sync.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }

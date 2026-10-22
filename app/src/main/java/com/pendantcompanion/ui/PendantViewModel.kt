@@ -622,6 +622,47 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     }
 
 
+    // ----- pendant storage fullness + safe free-space -----
+    private val _storageView = MutableStateFlow<StorageView?>(null)
+    val storageView: StateFlow<StorageView?> = _storageView
+    private val _storageNote = MutableStateFlow<String?>(null)
+    val storageNote: StateFlow<String?> = _storageNote
+
+    /** Read the pendant's storage state for the storage card. */
+    fun refreshStorage() {
+        val s = session ?: return
+        scope.launch(Dispatchers.IO) {
+            try { _storageView.value = storageStatus(s) }
+            catch (_: Exception) { /* keep the last reading on the card */ }
+        }
+    }
+
+    /**
+     * Erase every pendant page this phone already holds: delete up to the
+     * highest page index saved locally. Unsynced recordings stay on the
+     * pendant. Acknowledge mode does this continuously; this button is the
+     * manual, checked version for read-only mode.
+     */
+    fun eraseSyncedPages() {
+        val s = session ?: return
+        scope.launch(Dispatchers.IO) {
+            try {
+                val dir = java.io.File(getApplication<Application>().filesDir, "flash_pages")
+                val re = Regex("page_(\\d+)_session\\d+\\.bin")
+                val maxSaved = dir.listFiles { f -> f.name.startsWith("page_") }
+                    ?.mapNotNull { re.find(it.name)?.groupValues?.get(1)?.toInt() }
+                    ?.maxOrNull()
+                    ?: throw IllegalStateException("no pages saved on this phone yet")
+                s.deleteFlashPageUpTo(maxSaved)
+                kotlinx.coroutines.delay(600)
+                _storageView.value = storageStatus(s)
+                _storageNote.value = "erased pendant pages up to $maxSaved (all already saved on this phone)"
+            } catch (e: Exception) {
+                _storageNote.value = "could not erase: ${e.message}"
+            }
+        }
+    }
+
     // ----- pendant LED brightness -----
     // SetLEDBrightness (ServerCommandMsg field 26) exists in the protocol but
     // this is its first use against real hardware, so every write is followed
