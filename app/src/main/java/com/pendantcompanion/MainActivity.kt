@@ -67,6 +67,48 @@ fun exportFlashPages(context: android.content.Context): Int {
     return files.size
 }
 
+
+fun exportEverythingZip(context: android.content.Context): Int {
+    val pages = File(context.filesDir, "flash_pages").listFiles()
+        ?.filter { it.name.startsWith("page_") }?.sortedBy { it.name } ?: emptyList()
+    val transcripts = File(context.filesDir, "transcripts")
+        .listFiles { f -> f.name.startsWith("session_") && f.name.endsWith(".txt") }
+        ?.sortedBy { it.name } ?: emptyList()
+    if (pages.isEmpty() && transcripts.isEmpty()) return 0
+    val outDir = File(context.filesDir, "exports").apply { mkdirs() }
+    val out = File(outDir, "pendant_export_all.zip")
+    ZipOutputStream(FileOutputStream(out)).use { zos ->
+        pages.forEach { f ->
+            zos.putNextEntry(ZipEntry("pages/" + f.name))
+            f.inputStream().use { it.copyTo(zos) }
+            zos.closeEntry()
+        }
+        transcripts.forEach { f ->
+            zos.putNextEntry(ZipEntry("transcripts/" + f.name))
+            f.inputStream().use { it.copyTo(zos) }
+            zos.closeEntry()
+        }
+        zos.putNextEntry(ZipEntry("manifest.txt"))
+        val manifest = buildString {
+            appendLine("Pendant Companion export")
+            appendLine("exported: " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
+            appendLine("pages: ${pages.size} raw flash page files")
+            appendLine("transcripts: ${transcripts.size} text files")
+            appendLine("note: read-only sync, the pendant keeps its copies (no acknowledge ever sent)")
+        }
+        zos.write(manifest.toByteArray())
+        zos.closeEntry()
+    }
+    val uri: Uri = FileProvider.getUriForFile(context, "com.pendantcompanion.fileprovider", out)
+    val share = Intent(Intent.ACTION_SEND).apply {
+        type = "application/zip"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(share, "Export everything"))
+    return pages.size + transcripts.size
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -215,6 +257,16 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             Text(
                 if (exportedCount == 0) "Nothing to export yet: no pages saved on this phone."
                 else "Zipped $exportedCount page files. Pick Gmail in the share sheet to send them.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        var exportedAll by remember { mutableStateOf(-1) }
+        Button({ exportedAll = exportEverythingZip(ctx) }) { Text("Export everything (pages + transcripts)") }
+        if (exportedAll >= 0) {
+            Text(
+                if (exportedAll == 0) "Nothing to export yet: no pages or transcripts saved on this phone."
+                else "Zipped $exportedAll files (pages, transcripts, manifest). Pick Gmail in the share sheet to send them.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -459,9 +511,16 @@ fun LedCard(vm: PendantViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
             Row {
-                Button(enabled = !led.busy, onClick = { vm.setLedBrightness(3, "Dim LED") }) { Text("Almost off") }
-                Spacer(Modifier.width(10.dp))
-                Button(enabled = !led.busy, onClick = { vm.setLedBrightness(255, "Restore LED") }) { Text("Full") }
+                Button(enabled = !led.busy, onClick = { vm.setLedBrightness(0, "LED off") }) { Text("Off") }
+                Spacer(Modifier.width(6.dp))
+                Button(enabled = !led.busy, onClick = { vm.setLedBrightness(25, "LED quarter") }) { Text("25%") }
+                Spacer(Modifier.width(6.dp))
+                Button(enabled = !led.busy, onClick = { vm.setLedBrightness(50, "LED half") }) { Text("Half") }
+            }
+            Row {
+                Button(enabled = !led.busy, onClick = { vm.setLedBrightness(75, "LED three-quarter") }) { Text("75%") }
+                Spacer(Modifier.width(6.dp))
+                Button(enabled = !led.busy, onClick = { vm.setLedBrightness(100, "LED full") }) { Text("Full") }
             }
             led.note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }

@@ -297,11 +297,29 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             var pages = 0
             var frames = 0L
             var bytes = 0L
+            var skipped = 0
             var lastIdx = -1
             var note = ""
             try {
                 val ctx = getApplication<Application>()
                 val dir = java.io.File(ctx.filesDir, "flash_pages").apply { mkdirs() }
+                // Incremental: page index -> highest already on this phone.
+                val pageRe = Regex("page_(\\d+)_session\\d+\\.bin")
+                val maxSaved = (dir.listFiles { f -> f.name.startsWith("page_") }
+                    ?.mapNotNull { pageRe.find(it.name)?.groupValues?.get(1)?.toInt() }
+                    ?.maxOrNull())
+                // Fast path: if the pendant's newest page is one we already hold,
+                // skip the whole download instead of re-streaming the flash.
+                var skipDownload = false
+                try {
+                    val st = storageStatus(s)
+                    if (maxSaved != null && st.newestPage <= maxSaved) {
+                        skipDownload = true
+                        syncProgress.value = SyncProgress(0, 0, 0, st.newestPage, true,
+                            "already up to date: pendant's newest page is ${st.newestPage} and this phone has through $maxSaved. nothing to download")
+                        return@launch
+                    }
+                } catch (_: Exception) { /* storage readout failed: do the full sync */ }
                 syncProgress.value = SyncProgress(0, 0, 0, -1, false, "starting download mode")
                 s.storageListener = { buf ->
                     val page = buf.flashPage.toByteArray()
@@ -310,13 +328,21 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                             buf.ingestTypeValue, buf.session, buf.run, buf.seq,
                             buf.index, page)
                         val f = java.io.File(dir, "page_%08d_session%d.bin".format(fp.index, fp.session))
-                        f.writeBytes(fp.rawPageBytes)
-                        pages++
-                        frames += fp.opusFrames.size
-                        bytes += fp.rawPageBytes.size
-                        lastIdx = fp.index
-                        syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, false,
-                            "page ${fp.index} (${fp.rawPageBytes.size} B, ${fp.opusFrames.size} frames)")
+                        if (f.exists()) {
+                            // already on this phone from an earlier sync: keep the
+                            // original file, only count the transfer
+                            skipped++
+                            syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, false,
+                                "page ${fp.index} already saved — skipping (${skipped} so far)")
+                        } else {
+                            f.writeBytes(fp.rawPageBytes)
+                            pages++
+                            frames += fp.opusFrames.size
+                            bytes += fp.rawPageBytes.size
+                            lastIdx = fp.index
+                            syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, false,
+                                "page ${fp.index} (${fp.rawPageBytes.size} B, ${fp.opusFrames.size} frames)")
+                        }
                     }
                 }
                 s.beginBatchDownload()
@@ -333,8 +359,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     if (idle >= 1) break // 6s of silence
                 }
                 try { s.stopBatchDownload() } catch (_: Exception) { /* link may drop */ }
-                note = if (pages == 0)
+                note = if (pages == 0 && skipped == 0)
                     "pendant sent no pages. Try: short-press the pendant to wake it, make sure no other app is connected to it, then reconnect here and tap Download flash again."
+                else if (skipped > 0)
+                    "saved $pages new pages, skipped $skipped already on this phone, pendant copy untouched (no ack sent)"
                 else
                     "saved $pages pages, pendant copy untouched (no ack sent)"
                 syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true, note)
