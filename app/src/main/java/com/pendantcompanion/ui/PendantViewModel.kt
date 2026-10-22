@@ -29,6 +29,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import com.pendantcompanion.buildBackupZip
 
 /**
  * Read-only connection state machine. Phase 2 never sends destructive commands.
@@ -110,6 +113,20 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         /** Wall-clock start of the session (epoch ms), 0 when the pendant's page stamp is boot-clock and cannot be dated. */
         val startMs: Long = 0,
     )
+
+    // Ack mode (opt-in, default off): when on, every synced page is
+    // acknowledged (delete older_than_or_equal_to_index) only after it is
+    // durably written on this phone, and the pendant erases it. The phone
+    // becomes the only copy; a backup zip is rebuilt after each acked sync.
+    private val prefs = app.getSharedPreferences("pendant_prefs", Context.MODE_PRIVATE)
+    private val _ackMode = MutableStateFlow(prefs.getBoolean("ack_mode", false))
+    val ackMode: StateFlow<Boolean> = _ackMode
+    private val ackMutex = Mutex()
+
+    fun setAckMode(on: Boolean) {
+        _ackMode.value = on
+        prefs.edit().putBoolean("ack_mode", on).apply()
+    }
 
     private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList())
     val sessions: StateFlow<List<SessionInfo>> = _sessions
@@ -320,6 +337,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         return@launch
                     }
                 } catch (_: Exception) { /* storage readout failed: do the full sync */ }
+                val ack = ackMode.value
                 syncProgress.value = SyncProgress(0, 0, 0, -1, false, "starting download mode")
                 s.storageListener = { buf ->
                     val page = buf.flashPage.toByteArray()
@@ -328,20 +346,31 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                             buf.ingestTypeValue, buf.session, buf.run, buf.seq,
                             buf.index, page)
                         val f = java.io.File(dir, "page_%08d_session%d.bin".format(fp.index, fp.session))
+                        var ackThisPage = false
                         if (f.exists()) {
                             // already on this phone from an earlier sync: keep the
                             // original file, only count the transfer
                             skipped++
+                            ackThisPage = true
                             syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, false,
                                 "page ${fp.index} already saved — skipping (${skipped} so far)")
                         } else {
-                            f.writeBytes(fp.rawPageBytes)
+                            java.io.FileOutputStream(f).use { fos ->
+                                fos.write(fp.rawPageBytes)
+                                fos.fd.sync()
+                            }
+                            ackThisPage = f.length() == fp.rawPageBytes.size.toLong()
                             pages++
                             frames += fp.opusFrames.size
                             bytes += fp.rawPageBytes.size
                             lastIdx = fp.index
                             syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, false,
                                 "page ${fp.index} (${fp.rawPageBytes.size} B, ${fp.opusFrames.size} frames)")
+                        }
+                        if (ack && ackThisPage) scope.launch(Dispatchers.IO) {
+                            ackMutex.withLock {
+                                try { s.deleteFlashPageUpTo(fp.index) } catch (_: Exception) {}
+                            }
                         }
                     }
                 }
@@ -361,10 +390,20 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 try { s.stopBatchDownload() } catch (_: Exception) { /* link may drop */ }
                 note = if (pages == 0 && skipped == 0)
                     "pendant sent no pages. Try: short-press the pendant to wake it, make sure no other app is connected to it, then reconnect here and tap Download flash again."
+                else if (ack)
+                    "acknowledged ${pages + skipped} pages; pendant erases them, this phone now holds the only copy"
                 else if (skipped > 0)
                     "saved $pages new pages, skipped $skipped already on this phone, pendant copy untouched (no ack sent)"
                 else
                     "saved $pages pages, pendant copy untouched (no ack sent)"
+                if (ack && (pages > 0 || skipped > 0)) {
+                    try {
+                        val n = kotlinx.coroutines.withContext(Dispatchers.IO) { buildBackupZip(ctx) }
+                        note += "; backup zip rebuilt ($n files)"
+                    } catch (e: Exception) {
+                        note += "; WARNING: backup zip failed (${e.message}) — acknowledged pages exist only on this phone until an export succeeds"
+                    }
+                }
                 syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true, note)
             } catch (e: Exception) {
                 try { s.stopBatchDownload() } catch (_: Exception) {}
@@ -377,7 +416,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                 val st2 = kotlinx.coroutines.withTimeoutOrNull(6_000) { storageStatus(s) }
                 if (st2 != null) {
-                    val note2 = "after sync: pendant flash now $st2.oldestPage..$st2.newestPage (unchanged = success)"
+                    val note2 = if (ackMode.value)
+                        "after sync: pendant flash now ${st2.oldestPage}..${st2.newestPage} (ack mode: erased pages means acknowledged)"
+                    else
+                        "after sync: pendant flash now ${st2.oldestPage}..${st2.newestPage} (unchanged = success)"
                     syncProgress.value = syncProgress.value?.copy(note = note2)
                 }
                 } catch (_: Exception) {}

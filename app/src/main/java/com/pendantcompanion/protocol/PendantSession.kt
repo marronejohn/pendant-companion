@@ -154,6 +154,17 @@ class PendantSession(
         if (!sendOk) throw IllegalStateException("Could not queue fragments for send")
     }
 
+    /**
+     * Ack path ONLY: erase every flash page with an index at or below [index]
+     * (DeleteFlashPage.older_than_or_equal_to_index). Destructive by design,
+     * the official app's way of advancing its send pointer; called solely from
+     * the opt-in acknowledge mode after a page is durably saved on the phone.
+     */
+    suspend fun deleteFlashPageUpTo(index: Int) = sendOneway {
+        it.deleteFlashPage = Server.DeleteFlashPage.newBuilder()
+            .setOlderThanOrEqualToIndex(index).build()
+    }
+
     /** Download mode: pendant pushes stored flash pages as StorageBufferMsgs. */
     suspend fun beginBatchDownload() = sendOneway {
         it.downloadFlashPages = Server.DownloadFlashPages.newBuilder()

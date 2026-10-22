@@ -68,7 +68,7 @@ fun exportFlashPages(context: android.content.Context): Int {
 }
 
 
-fun exportEverythingZip(context: android.content.Context): Int {
+fun buildBackupZip(context: android.content.Context): Int {
     val pages = File(context.filesDir, "flash_pages").listFiles()
         ?.filter { it.name.startsWith("page_") }?.sortedBy { it.name } ?: emptyList()
     val transcripts = File(context.filesDir, "transcripts")
@@ -94,11 +94,18 @@ fun exportEverythingZip(context: android.content.Context): Int {
             appendLine("exported: " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
             appendLine("pages: ${pages.size} raw flash page files")
             appendLine("transcripts: ${transcripts.size} text files")
-            appendLine("note: read-only sync, the pendant keeps its copies (no acknowledge ever sent)")
+            appendLine("note: read-only sync unless acknowledge mode is on; acknowledged pages were erased from the pendant after being saved here")
         }
         zos.write(manifest.toByteArray())
         zos.closeEntry()
     }
+    return pages.size + transcripts.size
+}
+
+fun exportEverythingZip(context: android.content.Context): Int {
+    val n = buildBackupZip(context)
+    if (n == 0) return 0
+    val out = File(File(context.filesDir, "exports"), "pendant_export_all.zip")
     val uri: Uri = FileProvider.getUriForFile(context, "com.pendantcompanion.fileprovider", out)
     val share = Intent(Intent.ACTION_SEND).apply {
         type = "application/zip"
@@ -106,7 +113,7 @@ fun exportEverythingZip(context: android.content.Context): Int {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     context.startActivity(Intent.createChooser(share, "Export everything"))
-    return pages.size + transcripts.size
+    return n
 }
 
 class MainActivity : ComponentActivity() {
@@ -242,6 +249,8 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         SearchCard(vm)
         Spacer(Modifier.height(8.dp))
         LedCard(vm)
+        Spacer(Modifier.height(8.dp))
+        AckCard(vm)
         Spacer(Modifier.height(8.dp))
         val pickModel = rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument()
@@ -523,6 +532,26 @@ fun LedCard(vm: PendantViewModel) {
                 Button(enabled = !led.busy, onClick = { vm.setLedBrightness(100, "LED full") }) { Text("Full") }
             }
             led.note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+    }
+}
+
+@Composable
+fun AckCard(vm: PendantViewModel) {
+    val ack by vm.ackMode.collectAsState()
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Acknowledge pages after sync", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Switch(checked = ack, onCheckedChange = { vm.setAckMode(it) })
+            }
+            Text(
+                "Off (default): the pendant keeps every recording and each sync re-streams its whole flash. " +
+                    "On: each page is acknowledged only after it is saved on this phone, and the pendant erases it, " +
+                    "so later syncs transfer only new pages. This phone then holds the only copy. " +
+                    "A backup zip is rebuilt after every acknowledged sync; keep a copy of it outside the phone.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
