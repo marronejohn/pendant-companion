@@ -116,6 +116,38 @@ fun exportEverythingZip(context: android.content.Context): Int {
     return n
 }
 
+fun exportTranscriptsOnlyZip(context: android.content.Context): Int {
+    val transcripts = File(context.filesDir, "transcripts")
+        .listFiles { f -> f.name.startsWith("session_") && f.name.endsWith(".txt") }
+        ?.sortedBy { it.name } ?: emptyList()
+    if (transcripts.isEmpty()) return 0
+    val outDir = File(context.filesDir, "exports").apply { mkdirs() }
+    val out = File(outDir, "pendant_transcripts.zip")
+    ZipOutputStream(FileOutputStream(out)).use { zos ->
+        transcripts.forEach { f ->
+            zos.putNextEntry(ZipEntry(f.name))
+            f.inputStream().use { it.copyTo(zos) }
+            zos.closeEntry()
+        }
+        zos.putNextEntry(ZipEntry("manifest.txt"))
+        val manifest = buildString {
+            appendLine("Pendant Companion transcripts-only export")
+            appendLine("exported: " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
+            appendLine("transcripts: ${transcripts.size} text files")
+        }
+        zos.write(manifest.toByteArray())
+        zos.closeEntry()
+    }
+    val uri: Uri = FileProvider.getUriForFile(context, "com.pendantcompanion.fileprovider", out)
+    val share = Intent(Intent.ACTION_SEND).apply {
+        type = "application/zip"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(share, "Transcripts only"))
+    return transcripts.size
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -282,6 +314,15 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             )
         }
         Spacer(Modifier.height(8.dp))
+        var exportedTx by remember { mutableStateOf(-1) }
+        Button({ exportedTx = exportTranscriptsOnlyZip(ctx) }) { Text("Export transcripts only") }
+        if (exportedTx >= 0) {
+            Text(
+                if (exportedTx == 0) "No transcripts yet: transcribe a session first (needs the Whisper model loaded)."
+                else "Zipped $exportedTx transcript files. Pick Gmail in the share sheet to send them.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         Spacer(Modifier.height(12.dp))
         Button(onDisconnect) { Text("Disconnect") }
         Text("Read-only: pages are copied to this phone and the pendant keeps its copies (no acknowledge is sent).",
