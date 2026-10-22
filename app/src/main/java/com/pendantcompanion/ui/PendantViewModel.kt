@@ -809,6 +809,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private val _search = MutableStateFlow(SearchState("", emptyList(), false))
     val search: StateFlow<SearchState> = _search
     private var searchJob: Job? = null
+    private var exportJob: Job? = null
 
     /**
      * Local-only keyword search over saved transcripts. No network, no index
@@ -875,6 +876,36 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         val chooser = android.content.Intent.createChooser(share, "Transcript session $session")
         chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         getApplication<Application>().startActivity(chooser)
+    }
+
+    /** Share the session's decoded WAV together with its transcript text file. */
+    fun exportSessionAudioAndTranscript(session: Int) {
+        if (exportJob?.isActive == true) return
+        exportJob = scope.launch(Dispatchers.IO) {
+            try {
+                val wav = decodeSessionWav(session)
+                val files = ArrayList<java.io.File>()
+                files.add(wav)
+                transcriptFile(session).takeIf { it.exists() }?.let { files.add(it) }
+                val uris = ArrayList<android.net.Uri>(files.size)
+                for (f in files) {
+                    uris.add(androidx.core.content.FileProvider.getUriForFile(
+                        getApplication(), "com.pendantcompanion.fileprovider", f))
+                }
+                val share = android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE).apply {
+                    type = "*/*"
+                    putParcelableArrayListExtra(
+                        android.content.Intent.EXTRA_STREAM, uris)
+                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                             android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                val chooser = android.content.Intent.createChooser(
+                    share, "Session $session audio and transcript")
+                chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                getApplication<Application>().startActivity(chooser)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private suspend fun decodeSessionWav(session: Int): java.io.File {

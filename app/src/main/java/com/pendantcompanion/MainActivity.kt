@@ -356,6 +356,10 @@ fun SessionsCard(vm: PendantViewModel) {
                                        enabled = player !is PendantViewModel.PlayerState.Decoding) {
                                 Icon(Icons.Filled.Save, contentDescription = "Export WAV")
                             }
+                            IconButton({ vm.exportSessionAudioAndTranscript(sess.session) },
+                                       enabled = player !is PendantViewModel.PlayerState.Decoding) {
+                                Icon(Icons.Filled.Share, contentDescription = "Export audio + transcript")
+                            }
                             IconButton({ vm.shareTranscript(sess.session) }, enabled = hasTranscript) {
                                 Icon(Icons.Filled.Description, contentDescription = "Share transcript")
                             }
