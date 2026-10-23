@@ -923,9 +923,9 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     fun transcribeAllSessions() {
         if (BatchRunner.job?.isActive == true) return
         val app = getApplication<Application>()
-        BatchRunner.state.value = null
+        BatchRunner.state.value = BatchProgress(0, 0, -1, 0, "starting batch...")
         BatchRunner.job = BatchRunner.scope.launch {
-            TranscribeService.start(app)
+            try { TranscribeService.start(app) } catch (_: Exception) {}
             runBatch()
         }
     }
@@ -941,7 +941,18 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             val targets = _sessions.value.filter { it.frames > 0 }.sortedBy { it.session }
             if (targets.isEmpty()) return
             BatchRunner.state.value = BatchProgress(0, targets.size, -1, 0, "loading Whisper model")
-            if (!WhisperBridge.nativeInit(mf.absolutePath)) {
+            val loadStart = System.currentTimeMillis()
+            val ticker = BatchRunner.scope.launch {
+                while (true) {
+                    kotlinx.coroutines.delay(5_000)
+                    val secs = (System.currentTimeMillis() - loadStart) / 1000
+                    BatchRunner.state.value = BatchProgress(0, targets.size, -1, 0,
+                        "loading Whisper model (${secs}s elapsed)")
+                }
+            }
+            val loaded = WhisperBridge.nativeInit(mf.absolutePath)
+            ticker.cancel()
+            if (!loaded) {
                 throw IllegalStateException("Whisper failed to load the model file")
             }
             _model.value = _model.value.copy(ready = true)
@@ -981,7 +992,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             BatchRunner.state.value = null
             throw e
         } catch (e: Exception) {
-            BatchRunner.state.value = null
+            BatchRunner.state.value = BatchProgress(0, 0, -1, 0,
+                "batch failed: ${e.message?.take(90) ?: e.javaClass.simpleName}")
             _trans.value = TransState.TransError(-1, "Batch transcription failed: ${e.message ?: e.javaClass.simpleName}")
         }
         TranscribeService.stop(getApplication())
