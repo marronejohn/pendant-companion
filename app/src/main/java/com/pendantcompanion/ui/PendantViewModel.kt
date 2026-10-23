@@ -794,6 +794,9 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** One stitched Whisper segment: [t] is the real offset in seconds. */
+    private data class TransSeg(val t: Int, val text: String)
+
     /**
      * Transcribe 16 kHz mono samples in bounded 30 s windows with a 1 s
      * overlap, reporting progress per window and honouring stopTranscribe().
@@ -801,8 +804,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
      * longer sessions; each window's native buffers are small no matter how
      * long the session is. Each Whisper call is independent (no cross-window
      * context carry-over), which also breaks the repetition loops that long
-     * stretches of radio or music used to fall into. Seam words are deduped
-     * at word level before the chunks are joined.
+     * stretches of radio or music used to fall into. Segment stamps are
+     * rebased to the whole session, and the 1 s overlap's duplicated words
+     * are dropped at each seam, so the joined transcript reads like the
+     * old single-pass one.
      */
     private fun transcribeChunked(
         samples: FloatArray,
@@ -810,41 +815,63 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         onNote: (String) -> Unit,
     ): String {
         if (samples.isEmpty()) return ""
-        val chunk = 480_000   // 30 s at 16 kHz
-        val overlap = 16_000  // 1 s
+        val chunk = 480_000    // 30 s at 16 kHz
+        val overlap = 16_000   // 1 s
+        val minTail = 80_000   // fold a remainder shorter than 5 s into the last window
         val step = chunk - overlap
-        val total = if (samples.size <= chunk) 1 else (samples.size - overlap + step - 1) / step
-        val sb = StringBuilder()
+        val approxTotal = if (samples.size <= chunk) 1 else (samples.size + step - 1) / step
+        val segs = mutableListOf<TransSeg>()
         var start = 0
         var idx = 0
         while (start < samples.size) {
             if (transCancel.get()) throw IllegalStateException("stopped by user")
             idx++
-            val end = minOf(start + chunk, samples.size)
-            onNote("transcribing chunk $idx of $total")
+            var end = minOf(start + chunk, samples.size)
+            if (end < samples.size && samples.size - end < minTail) end = samples.size
+            onNote("transcribing chunk $idx of ~$approxTotal")
             val piece = java.util.Arrays.copyOfRange(samples, start, end)
-            val text = WhisperBridge.nativeTranscribe(piece, threads) ?: ""
-            val cleaned = dedupeOverlap(sb.toString(), text.trim())
-            if (cleaned.isNotBlank()) {
-                if (sb.isNotEmpty()) sb.append(' ')
-                sb.append(cleaned)
+            val raw = WhisperBridge.nativeTranscribe(piece, threads) ?: ""
+            val offset = start / 16000.0
+            val newSegs = parseSegments(raw, offset)
+            if (segs.isNotEmpty() && newSegs.isNotEmpty()) {
+                // The 1 s overlap can make the first window of the next chunk
+                // repeat the words the previous chunk already ended with.
+                val prevWords = segs.last().text.split(Regex("\\s+"))
+                val first = newSegs[0]
+                val words = first.text.split(Regex("\\s+"))
+                var best = 0
+                for (k in minOf(prevWords.size, words.size, 8) downTo 1) {
+                    if (words.take(k) == prevWords.takeLast(k)) { best = k; break }
+                }
+                if (best > 0) {
+                    val rest = words.drop(best).joinToString(" ").trim()
+                    if (rest.isBlank()) newSegs.removeAt(0) else newSegs[0] = first.copy(text = rest)
+                }
             }
+            for (sg in newSegs) if (sg.text.isNotBlank()) segs.add(sg)
             if (end >= samples.size) break
             start += step
+        }
+        val sb = StringBuilder()
+        for (sg in segs) {
+            sb.append(String.format(java.util.Locale.US, "[%02d:%02d] ", sg.t / 60, sg.t % 60))
+            sb.append(sg.text)
+            sb.append('\n')
         }
         return sb.toString().trim()
     }
 
-    /** Drop words at the start of [next] that repeat the tail of [prev]. */
-    private fun dedupeOverlap(prev: String, next: String): String {
-        if (prev.isBlank() || next.isBlank()) return next
-        val prevWords = prev.split(Regex("\\s+")).takeLast(6)
-        val nextWords = next.split(Regex("\\s+"))
-        var best = 0
-        for (k in minOf(prevWords.size, nextWords.size) downTo 1) {
-            if (nextWords.take(k) == prevWords.takeLast(k)) { best = k; break }
+    /** "[mm:ss] text" lines relative to the window start, rebased to [offsetSec]. */
+    private fun parseSegments(raw: String, offsetSec: Double): MutableList<TransSeg> {
+        val out = mutableListOf<TransSeg>()
+        val re = Regex("^\\[(\\d+):(\\d+)]\\s*(.*)$")
+        for (line in raw.lines()) {
+            val m = re.matchEntire(line.trim()) ?: continue
+            val rel = m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt()
+            val text = m.groupValues[3].trim()
+            if (text.isNotEmpty()) out.add(TransSeg((offsetSec + rel).toInt(), text))
         }
-        return if (best > 0) nextWords.drop(best).joinToString(" ") else next
+        return out
     }
 
     fun transcribeSession(session: Int) {
@@ -870,7 +897,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     _trans.value = TransState.Running(session, note)
                 }
                 if (text.isBlank()) {
-                    throw IllegalStateException("Whisper returned no text")
+                    throw IllegalStateException("No speech detected in this session (only silence, music or radio)")
                 }
                 val tf = transcriptFile(session)
                 tf.writeText(text)
@@ -929,7 +956,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     val text = transcribeChunked(samples, threads) { note ->
                         BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, note)
                     }
-                    if (text.isBlank()) throw IllegalStateException("Whisper returned no text")
+                    if (text.isBlank()) throw IllegalStateException("No speech detected in this session (only silence, music or radio)")
                     transcriptFile(s.session).writeText(text)
                     done++
                 } catch (e: Throwable) {
