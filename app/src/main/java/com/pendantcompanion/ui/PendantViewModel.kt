@@ -794,6 +794,59 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Transcribe 16 kHz mono samples in bounded 30 s windows with a 1 s
+     * overlap, reporting progress per window and honouring stopTranscribe().
+     * One giant Whisper pass is what exhausted memory and froze the app on
+     * longer sessions; each window's native buffers are small no matter how
+     * long the session is. Each Whisper call is independent (no cross-window
+     * context carry-over), which also breaks the repetition loops that long
+     * stretches of radio or music used to fall into. Seam words are deduped
+     * at word level before the chunks are joined.
+     */
+    private fun transcribeChunked(
+        samples: FloatArray,
+        threads: Int,
+        onNote: (String) -> Unit,
+    ): String {
+        if (samples.isEmpty()) return ""
+        val chunk = 480_000   // 30 s at 16 kHz
+        val overlap = 16_000  // 1 s
+        val step = chunk - overlap
+        val total = if (samples.size <= chunk) 1 else (samples.size - overlap + step - 1) / step
+        val sb = StringBuilder()
+        var start = 0
+        var idx = 0
+        while (start < samples.size) {
+            if (transCancel.get()) throw IllegalStateException("stopped by user")
+            idx++
+            val end = minOf(start + chunk, samples.size)
+            onNote("transcribing chunk $idx of $total")
+            val piece = java.util.Arrays.copyOfRange(samples, start, end)
+            val text = WhisperBridge.nativeTranscribe(piece, threads) ?: ""
+            val cleaned = dedupeOverlap(sb.toString(), text.trim())
+            if (cleaned.isNotBlank()) {
+                if (sb.isNotEmpty()) sb.append(' ')
+                sb.append(cleaned)
+            }
+            if (end >= samples.size) break
+            start += step
+        }
+        return sb.toString().trim()
+    }
+
+    /** Drop words at the start of [next] that repeat the tail of [prev]. */
+    private fun dedupeOverlap(prev: String, next: String): String {
+        if (prev.isBlank() || next.isBlank()) return next
+        val prevWords = prev.split(Regex("\\s+")).takeLast(6)
+        val nextWords = next.split(Regex("\\s+"))
+        var best = 0
+        for (k in minOf(prevWords.size, nextWords.size) downTo 1) {
+            if (nextWords.take(k) == prevWords.takeLast(k)) { best = k; break }
+        }
+        return if (best > 0) nextWords.drop(best).joinToString(" ") else next
+    }
+
     fun transcribeSession(session: Int) {
         if (transJob?.isActive == true || BatchRunner.job?.isActive == true) return
         transJob = scope.launch(Dispatchers.Default) {
@@ -810,17 +863,24 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     throw IllegalStateException("Whisper failed to load the model file")
                 }
                 _model.value = _model.value.copy(ready = true)
-                _trans.value = TransState.Running(session, "transcribing; a few minutes for a long session")
+                _trans.value = TransState.Running(session, "transcribing")
                 val samples = wavToSamples(wav)
-                val text = WhisperBridge.nativeTranscribe(samples, minOf(Runtime.getRuntime().availableProcessors(), 6))
-                if (text == null || text.isBlank()) {
+                transCancel.set(false)
+                val text = transcribeChunked(samples, minOf(Runtime.getRuntime().availableProcessors(), 6)) { note ->
+                    _trans.value = TransState.Running(session, note)
+                }
+                if (text.isBlank()) {
                     throw IllegalStateException("Whisper returned no text")
                 }
                 val tf = transcriptFile(session)
                 tf.writeText(text)
                 _trans.value = TransState.Done(session, text)
             } catch (e: Exception) {
-                _trans.value = TransState.TransError(session, "Transcription failed: ${e.message ?: e.javaClass.simpleName}")
+                if (e.message?.contains("stopped by user") == true) {
+                    _trans.value = TransState.TransError(session, "Transcription stopped.")
+                } else {
+                    _trans.value = TransState.TransError(session, "Transcription failed: ${e.message ?: e.javaClass.simpleName}")
+                }
             }
         }
     }
@@ -865,11 +925,15 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     val wav = decodeSessionWav(s.session)
                     BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, "transcribing")
                     val samples = wavToSamples(wav)
-                    val text = WhisperBridge.nativeTranscribe(samples, threads)
-                    if (text.isNullOrBlank()) throw IllegalStateException("Whisper returned no text")
+                    transCancel.set(false)
+                    val text = transcribeChunked(samples, threads) { note ->
+                        BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, note)
+                    }
+                    if (text.isBlank()) throw IllegalStateException("Whisper returned no text")
                     transcriptFile(s.session).writeText(text)
                     done++
                 } catch (e: Throwable) {
+                    if (transCancel.get()) break
                     failed++
                 }
                 BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, "")
@@ -888,10 +952,15 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun stopBatch() {
+        transCancel.set(true)
         BatchRunner.job?.cancel()
         BatchRunner.state.value = null
         try { TranscribeService.stop(getApplication()) } catch (_: Exception) {}
     }
+
+    /** Stop an in-flight transcription (single or batch) between chunks. */
+    private val transCancel = java.util.concurrent.atomic.AtomicBoolean(false)
+    fun stopTranscribe() { transCancel.set(true) }
 
     /** One transcript match: session, the [mm:ss] stamp of the first hit, and matching lines. */
     data class SearchHit(val session: Int, val stamp: String, val snippet: String)

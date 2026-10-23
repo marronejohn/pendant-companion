@@ -488,6 +488,7 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                 is PendantViewModel.TransState.Running -> {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text("Session ${t.session}: ${t.note}", style = MaterialTheme.typography.bodySmall)
+                    Button(onClick = { vm.stopTranscribe() }) { Text("Stop") }
                 }
                 is PendantViewModel.TransState.Done ->
                     Text("Session ${t.session} transcribed (${t.text.length} chars). Use TXT to view or share.",
