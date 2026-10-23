@@ -43,6 +43,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import java.util.Locale
 
 fun exportFlashPages(context: android.content.Context): Int {
     val dir = File(context.filesDir, "flash_pages")
@@ -445,7 +448,7 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
             Text("On-device transcription (Whisper)", style = MaterialTheme.typography.titleMedium)
             val mp = model.path
             if (mp == null) {
-                Text("No model loaded. Pick a ggml .bin Whisper model file (no internet needed).",
+                Text("No model loaded. Pick a ggml .bin Whisper model file (no internet needed). tiny.en works; base.en or small.en .bin models also load the same way for noticeably better transcripts.",
                      style = MaterialTheme.typography.bodySmall)
                 Button(onClick = onPickModel) { Text("Load model file") }
             } else {
@@ -453,6 +456,8 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                      if (model.ready) " — ready" else "",
                      style = MaterialTheme.typography.bodySmall)
                 Button(onClick = onPickModel) { Text("Replace model") }
+                Text("Want better accuracy? Import a larger ggml .bin model (base.en or small.en); it replaces the current one the same way.",
+                     style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(4.dp))
                 val b by vm.batch.collectAsState()
                 Button(onClick = { vm.transcribeAllSessions() }, enabled = b == null) {
@@ -560,15 +565,62 @@ fun SearchCard(vm: PendantViewModel) {
             }
             viewing?.let { sess ->
                 val text = remember(sess) { vm.transcriptText(sess) } ?: ""
+                val ctx = LocalContext.current
+                var ttsReady by remember(sess) { mutableStateOf(false) }
+                var speaking by remember(sess) { mutableStateOf(false) }
+                val tts = remember(sess) {
+                    TextToSpeech(ctx) { st -> ttsReady = st == TextToSpeech.SUCCESS }
+                }
+                DisposableEffect(sess) {
+                    onDispose { try { tts.stop(); tts.shutdown() } catch (_: Exception) {} }
+                }
+                val tprefs = remember(sess) { ctx.getSharedPreferences("pendant_prefs", Context.MODE_PRIVATE) }
+                var speed by remember(sess) { mutableStateOf(tprefs.getFloat("tts_speed", 1.0f)) }
                 AlertDialog(
                     onDismissRequest = { viewing = null },
                     confirmButton = { TextButton({ viewing = null }) { Text("Close") } },
                     title = { Text("Session $sess transcript") },
                     text = {
                         Column(
-                            Modifier.heightIn(max = 420.dp)
+                            Modifier.heightIn(max = 480.dp)
                                 .verticalScroll(rememberScrollState()),
                         ) {
+                            if (text.isNotEmpty()) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Button(
+                                        enabled = ttsReady,
+                                        onClick = {
+                                            if (speaking) { tts.stop(); speaking = false }
+                                            else {
+                                                tts.setSpeechRate(speed)
+                                                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                                                    override fun onStart(id: String?) { speaking = true }
+                                                    override fun onDone(id: String?) { speaking = false }
+                                                    @Deprecated("Deprecated in Java")
+                                                    override fun onError(id: String?) { speaking = false }
+                                                })
+                                                tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "sess$sess")
+                                                speaking = true
+                                            }
+                                        },
+                                    ) { Text(if (speaking) "Stop" else "Read aloud") }
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(String.format(Locale.US, "Speed %.1fx", speed),
+                                         style = MaterialTheme.typography.bodySmall)
+                                }
+                                Slider(
+                                    value = speed,
+                                    onValueChange = {
+                                        speed = it
+                                        tts.setSpeechRate(it)
+                                        tprefs.edit().putFloat("tts_speed", it).apply()
+                                    },
+                                    valueRange = 0.5f..1.6f,
+                                )
+                            }
+                            if (!ttsReady && text.isNotEmpty()) {
+                                Text("Speech engine loading...", style = MaterialTheme.typography.bodySmall)
+                            }
                             Text(
                                 if (text.isEmpty()) "No transcript saved for this session." else text,
                                 style = MaterialTheme.typography.bodySmall,
@@ -611,12 +663,22 @@ fun LedCard(vm: PendantViewModel) {
 @Composable
 fun AckCard(vm: PendantViewModel) {
     val ack by vm.ackMode.collectAsState()
+    val auto by vm.autoSync.collectAsState()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Acknowledge pages after sync", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 Switch(checked = ack, onCheckedChange = { vm.setAckMode(it) })
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Auto-sync on connect", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Switch(checked = auto, onCheckedChange = { vm.setAutoSync(it) })
+            }
+            Text(
+                "On (default): as soon as the pendant connects, a read-only sync starts by itself; if new pages were saved, the backup zip is refreshed afterwards. " +
+                    "Off: you tap Download flash yourself.",
+                style = MaterialTheme.typography.bodySmall,
+            )
             Text(
                 "Off (default): the pendant keeps every recording and each sync re-streams its whole flash. " +
                     "On: each page is acknowledged only after it is saved on this phone, and the pendant erases it, " +

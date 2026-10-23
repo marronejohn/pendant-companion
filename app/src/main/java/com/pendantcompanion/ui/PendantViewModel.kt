@@ -129,6 +129,17 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("ack_mode", on).apply()
     }
 
+    // Auto-sync on connect (default on): after the pendant connects and
+    // inspection succeeds, a read-only sync starts automatically, and the
+    // backup zip is refreshed afterwards when new pages were saved.
+    private val _autoSync = MutableStateFlow(prefs.getBoolean("auto_sync_on_connect", true))
+    val autoSync: StateFlow<Boolean> = _autoSync
+
+    fun setAutoSync(on: Boolean) {
+        _autoSync.value = on
+        prefs.edit().putBoolean("auto_sync_on_connect", on).apply()
+    }
+
     private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList())
     val sessions: StateFlow<List<SessionInfo>> = _sessions
 
@@ -222,6 +233,9 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                             val info = inspect(s)
                             _state.value = State.Connected(device.name ?: device.address, info)
                             checkStorageNow()
+                            if (_autoSync.value && syncJob?.isActive != true) {
+                                try { syncReadOnly(fromAutoSync = true) } catch (_: Exception) {}
+                            }
                         } catch (e: Exception) {
                             fail = "Connected, but device inspection failed: ${e.message}"
                             _state.value = State.Error(fail!!)
@@ -307,7 +321,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
      * NEVER acknowledges pages (no delete_flash_page), so the pendant keeps
      * everything; this is the hard default of the project spec.
      */
-    fun syncReadOnly() {
+    fun syncReadOnly(fromAutoSync: Boolean = false) {
         val s = session ?: return
         val c = client ?: return
         if (syncJob?.isActive == true) return
@@ -403,6 +417,14 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         note += "; backup zip rebuilt ($n files)"
                     } catch (e: Exception) {
                         note += "; WARNING: backup zip failed (${e.message}) — acknowledged pages exist only on this phone until an export succeeds"
+                    }
+                }
+                if (fromAutoSync && pages > 0) {
+                    try {
+                        val n = kotlinx.coroutines.withContext(Dispatchers.IO) { buildBackupZip(ctx) }
+                        note += "; auto-backup zip rebuilt ($n files)"
+                    } catch (e: Exception) {
+                        note += "; auto-backup failed (${e.message})"
                     }
                 }
                 syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true, note)
