@@ -464,9 +464,9 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                     Text("Transcribe all sessions")
                 }
                 b?.let { bt ->
-                    if (bt.total > 0) {
+                    if (bt.total > 0 && bt.fraction > 0f) {
                         LinearProgressIndicator(
-                            progress = { bt.done.toFloat() / bt.total },
+                            progress = { bt.fraction.coerceIn(0f, 1f) },
                             Modifier.fillMaxWidth(),
                         )
                     }
@@ -474,10 +474,13 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                         when {
                             bt.note == "finished" ->
                                 "Finished: ${bt.done} of ${bt.total} transcripts ready, ${bt.failed} failed. Use Export transcripts only to zip them all."
+                            bt.total == 0 ->
+                                "Batch: ${bt.note}"
                             bt.note.isBlank() ->
                                 "Batch: ${bt.done} of ${bt.total} done; session ${bt.session} up next"
                             else ->
-                                "Batch: ${bt.done} of ${bt.total} done; session ${bt.session} ${bt.note}"
+                                "Batch: ${bt.done} of ${bt.total} done; session ${bt.session} ${bt.note}" +
+                                    (if (bt.fraction > 0f) " (${(bt.fraction * 100).toInt()}% overall)" else "")
                         },
                         style = MaterialTheme.typography.bodySmall,
                     )

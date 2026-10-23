@@ -812,7 +812,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private fun transcribeChunked(
         samples: FloatArray,
         threads: Int,
-        onNote: (String) -> Unit,
+        onNote: (String, Float) -> Unit,
     ): String {
         if (samples.isEmpty()) return ""
         val chunk = 480_000    // 30 s at 16 kHz
@@ -828,7 +828,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             idx++
             var end = minOf(start + chunk, samples.size)
             if (end < samples.size && samples.size - end < minTail) end = samples.size
-            onNote("transcribing chunk $idx of ~$approxTotal")
+            onNote("transcribing chunk $idx of ~$approxTotal", idx.toFloat() / approxTotal)
             val piece = java.util.Arrays.copyOfRange(samples, start, end)
             val raw = WhisperBridge.nativeTranscribe(piece, threads) ?: ""
             val offset = start / 16000.0
@@ -893,7 +893,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _trans.value = TransState.Running(session, "transcribing")
                 val samples = wavToSamples(wav)
                 transCancel.set(false)
-                val text = transcribeChunked(samples, minOf(Runtime.getRuntime().availableProcessors(), 6)) { note ->
+                val text = transcribeChunked(samples, minOf(Runtime.getRuntime().availableProcessors(), 6)) { note, _ ->
                     _trans.value = TransState.Running(session, note)
                 }
                 if (text.isBlank()) {
@@ -915,6 +915,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     // ----- batch transcription: every session that holds audio, one tap -----
     data class BatchProgress(
         val done: Int, val total: Int, val session: Int, val failed: Int, val note: String,
+        val fraction: Float = 0f,
     )
 
     val batch: StateFlow<BatchProgress?> = BatchRunner.state
@@ -936,25 +937,32 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _trans.value = TransState.TransError(-1, "No Whisper model loaded. Tap Load model file first.")
                 return
             }
+            val threads = minOf(Runtime.getRuntime().availableProcessors(), 6)
+            val targets = _sessions.value.filter { it.frames > 0 }.sortedBy { it.session }
+            if (targets.isEmpty()) return
+            BatchRunner.state.value = BatchProgress(0, targets.size, -1, 0, "loading Whisper model")
             if (!WhisperBridge.nativeInit(mf.absolutePath)) {
                 throw IllegalStateException("Whisper failed to load the model file")
             }
             _model.value = _model.value.copy(ready = true)
-            val threads = minOf(Runtime.getRuntime().availableProcessors(), 6)
-            val targets = _sessions.value.filter { it.frames > 0 }.sortedBy { it.session }
-            if (targets.isEmpty()) return
             var done = 0
             var failed = 0
             for (s in targets) {
                 if (transcriptFile(s.session).exists()) { done++; continue }
+                var lastNote = ""
                 try {
-                    BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, "decoding audio")
+                    lastNote = "decoding audio"
+                    BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, lastNote)
                     val wav = decodeSessionWav(s.session)
-                    BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, "transcribing")
+                    lastNote = "transcribing"
+                    BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, lastNote)
                     val samples = wavToSamples(wav)
                     transCancel.set(false)
-                    val text = transcribeChunked(samples, threads) { note ->
-                        BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, note)
+                    val text = transcribeChunked(samples, threads) { note, frac ->
+                        lastNote = note
+                        BatchRunner.state.value =
+                            BatchProgress(done, targets.size, s.session, failed, note,
+                                          (done + frac) / targets.size)
                     }
                     if (text.isBlank()) throw IllegalStateException("No speech detected in this session (only silence, music or radio)")
                     transcriptFile(s.session).writeText(text)
@@ -962,10 +970,11 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 } catch (e: Throwable) {
                     if (transCancel.get()) break
                     failed++
+                    lastNote = "failed: ${e.message?.take(80) ?: e.javaClass.simpleName}"
                 }
-                BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, "")
+                BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, lastNote)
             }
-            BatchRunner.state.value = BatchProgress(done, targets.size, -1, failed, "finished")
+            BatchRunner.state.value = BatchProgress(done, targets.size, -1, failed, "finished", 1f)
             kotlinx.coroutines.delay(30_000)
             BatchRunner.state.value = null
         } catch (e: kotlinx.coroutines.CancellationException) {

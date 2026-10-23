@@ -57,12 +57,23 @@ class TranscribeService : Service() {
                         nm2.notify(ID, build("Finished: ${st.done} of ${st.total} transcripts, ${st.failed} failed"))
                         stopSelf()
                     }
-                    else -> nm2.notify(
-                        ID,
-                        build("Transcribing: ${st.done} of ${st.total} done" +
-                              (if (st.failed > 0) ", ${st.failed} failed" else "") +
-                              (if (st.note.isBlank()) "" else " (${st.note})"))
-                    )
+                    else -> {
+                        val pct = (st.fraction * 100).toInt()
+                        val text = "Transcribing: ${st.done} of ${st.total} done" +
+                            (if (st.failed > 0) ", ${st.failed} failed" else "") +
+                            (if (st.fraction > 0f) ", ${pct}% complete" else "") +
+                            (if (st.note.isBlank()) "" else " (${st.note})")
+                        nm2.notify(
+                            ID,
+                            NotificationCompat.Builder(this@TranscribeService, CHANNEL)
+                                .setSmallIcon(android.R.drawable.stat_sys_download)
+                                .setContentTitle("Pendant Companion: transcribing")
+                                .setContentText(text)
+                                .setOngoing(true)
+                                .setProgress(if (st.fraction > 0f) 100 else 0, if (st.fraction > 0f) pct else 0, st.fraction <= 0f)
+                                .build(),
+                        )
+                    }
                 }
             }
         }
