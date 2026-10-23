@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import androidx.core.content.ContextCompat
 import com.pendantcompanion.ble.PendantGattClient
+import com.pendantcompanion.TranscribeService
 import com.pendantcompanion.ble.PendantScanHit
 import com.pendantcompanion.ble.PendantScanner
 import com.pendantcompanion.protocol.FlashPageParser
@@ -772,7 +773,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun transcribeSession(session: Int) {
-        if (transJob?.isActive == true) return
+        if (transJob?.isActive == true || BatchRunner.job?.isActive == true) return
         transJob = scope.launch(Dispatchers.Default) {
             try {
                 val mf = modelFile()
@@ -789,7 +790,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _model.value = _model.value.copy(ready = true)
                 _trans.value = TransState.Running(session, "transcribing; a few minutes for a long session")
                 val samples = wavToSamples(wav)
-                val text = WhisperBridge.nativeTranscribe(samples, 4)
+                val text = WhisperBridge.nativeTranscribe(samples, minOf(Runtime.getRuntime().availableProcessors(), 6))
                 if (text == null || text.isBlank()) {
                     throw IllegalStateException("Whisper returned no text")
                 }
@@ -807,59 +808,67 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         val done: Int, val total: Int, val session: Int, val failed: Int, val note: String,
     )
 
-    private val _batch = MutableStateFlow<BatchProgress?>(null)
-    val batch: StateFlow<BatchProgress?> = _batch
-    private var batchJob: Job? = null
+    val batch: StateFlow<BatchProgress?> = BatchRunner.state
 
-    /**
-     * Transcribe every saved session that holds audio, oldest first, without
-     * tapping each one. Sessions that already have a transcript are skipped,
-     * so the batch can be re-run to pick up where it left off.
-     */
     fun transcribeAllSessions() {
-        if (batchJob?.isActive == true || transJob?.isActive == true) return
-        batchJob = scope.launch(Dispatchers.Default) {
-            try {
-                val mf = modelFile()
-                if (!mf.exists() || mf.length() < 10_000_000) {
-                    _trans.value = TransState.TransError(-1, "No Whisper model loaded. Tap Load model file first.")
-                    return@launch
-                }
-                if (!WhisperBridge.nativeInit(mf.absolutePath)) {
-                    throw IllegalStateException("Whisper failed to load the model file")
-                }
-                _model.value = _model.value.copy(ready = true)
-                val targets = _sessions.value.filter { it.frames > 0 }.sortedBy { it.session }
-                if (targets.isEmpty()) { _batch.value = null; return@launch }
-                var done = 0
-                var failed = 0
-                for (s in targets) {
-                    if (transcriptFile(s.session).exists()) { done++; continue }
-                    try {
-                        _batch.value = BatchProgress(done, targets.size, s.session, failed, "decoding audio")
-                        val wav = decodeSessionWav(s.session)
-                        _batch.value = BatchProgress(done, targets.size, s.session, failed, "transcribing")
-                        val samples = wavToSamples(wav)
-                        val text = WhisperBridge.nativeTranscribe(samples, 4)
-                        if (text.isNullOrBlank()) throw IllegalStateException("Whisper returned no text")
-                        transcriptFile(s.session).writeText(text)
-                        done++
-                    } catch (e: Exception) {
-                        failed++
-                    }
-                    _batch.value = BatchProgress(done, targets.size, s.session, failed, "")
-                }
-                _batch.value = BatchProgress(done, targets.size, -1, failed, "finished")
-            } catch (e: Exception) {
-                _batch.value = null
-                _trans.value = TransState.TransError(-1, "Batch transcription failed: ${e.message ?: e.javaClass.simpleName}")
-            }
+        if (BatchRunner.job?.isActive == true) return
+        val app = getApplication<Application>()
+        BatchRunner.state.value = null
+        BatchRunner.job = BatchRunner.scope.launch {
+            TranscribeService.start(app)
+            runBatch()
         }
     }
 
+    private suspend fun runBatch() {
+        try {
+            val mf = modelFile()
+            if (!mf.exists() || mf.length() < 10_000_000) {
+                _trans.value = TransState.TransError(-1, "No Whisper model loaded. Tap Load model file first.")
+                return
+            }
+            if (!WhisperBridge.nativeInit(mf.absolutePath)) {
+                throw IllegalStateException("Whisper failed to load the model file")
+            }
+            _model.value = _model.value.copy(ready = true)
+            val threads = minOf(Runtime.getRuntime().availableProcessors(), 6)
+            val targets = _sessions.value.filter { it.frames > 0 }.sortedBy { it.session }
+            if (targets.isEmpty()) return
+            var done = 0
+            var failed = 0
+            for (s in targets) {
+                if (transcriptFile(s.session).exists()) { done++; continue }
+                try {
+                    BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, "decoding audio")
+                    val wav = decodeSessionWav(s.session)
+                    BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, "transcribing")
+                    val samples = wavToSamples(wav)
+                    val text = WhisperBridge.nativeTranscribe(samples, threads)
+                    if (text.isNullOrBlank()) throw IllegalStateException("Whisper returned no text")
+                    transcriptFile(s.session).writeText(text)
+                    done++
+                } catch (e: Throwable) {
+                    failed++
+                }
+                BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, "")
+            }
+            BatchRunner.state.value = BatchProgress(done, targets.size, -1, failed, "finished")
+            kotlinx.coroutines.delay(30_000)
+            BatchRunner.state.value = null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            BatchRunner.state.value = null
+            throw e
+        } catch (e: Exception) {
+            BatchRunner.state.value = null
+            _trans.value = TransState.TransError(-1, "Batch transcription failed: ${e.message ?: e.javaClass.simpleName}")
+        }
+        TranscribeService.stop(getApplication())
+    }
+
     fun stopBatch() {
-        batchJob?.cancel()
-        _batch.value = null
+        BatchRunner.job?.cancel()
+        BatchRunner.state.value = null
+        try { TranscribeService.stop(getApplication()) } catch (_: Exception) {}
     }
 
     /** One transcript match: session, the [mm:ss] stamp of the first hit, and matching lines. */
@@ -980,17 +989,28 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 48 kHz 16-bit WAV -> 16 kHz float samples (simple 3:1 box filter). */
     private fun wavToSamples(wav: java.io.File): FloatArray {
-        val bytes = wav.readBytes()
-        val start = 44
-        val n = (bytes.size - start) / 6
+        val total = wav.length()
+        val start = 44L
+        val n = ((total - start) / 6).toInt().coerceAtLeast(0)
         val out = FloatArray(n)
-        var bi = start
-        for (i in 0 until n) {
-            val s0 = ((bytes[bi].toInt() and 0xff) or (bytes[bi + 1].toInt() shl 8)).toShort().toInt()
-            val s1 = ((bytes[bi + 2].toInt() and 0xff) or (bytes[bi + 3].toInt() shl 8)).toShort().toInt()
-            val s2 = ((bytes[bi + 4].toInt() and 0xff) or (bytes[bi + 5].toInt() shl 8)).toShort().toInt()
-            out[i] = ((s0 + s1 + s2) / 3f) / 32768f
-            bi += 6
+        java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(wav), 1 shl 20)).use { inp ->
+            var skipped = 0L
+            while (skipped < start) skipped += inp.skip(start - skipped)
+            val buf = ByteArray(1 shl 16)
+            var i = 0
+            while (i < n) {
+                val got = inp.read(buf, 0, minOf(buf.size, (n - i) * 6))
+                if (got <= 0) break
+                val frames = got / 6
+                for (k in 0 until frames) {
+                    val bi = k * 6
+                    val s0 = ((buf[bi].toInt() and 0xff) or (buf[bi + 1].toInt() shl 8)).toShort().toInt()
+                    val s1 = ((buf[bi + 2].toInt() and 0xff) or (buf[bi + 3].toInt() shl 8)).toShort().toInt()
+                    val s2 = ((buf[bi + 4].toInt() and 0xff) or (buf[bi + 5].toInt() shl 8)).toShort().toInt()
+                    out[i + k] = ((s0 + s1 + s2) / 3f) / 32768f
+                }
+                i += frames
+            }
         }
         return out
     }
@@ -1028,4 +1048,19 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         session?.close()
         client?.release()
     }
+}
+
+/**
+ * App-scoped home for a batch transcription run: lives outside the
+ * ViewModel so closing the activity does not cancel the batch, while the
+ * foreground [com.pendantcompanion.TranscribeService] keeps the process
+ * itself alive. Transcript files persist per session, so a batch that is
+ * interrupted resumes where it left off on the next run.
+ */
+object BatchRunner {
+    val scope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default
+    )
+    val state = kotlinx.coroutines.flow.MutableStateFlow<PendantViewModel.BatchProgress?>(null)
+    var job: kotlinx.coroutines.Job? = null
 }
