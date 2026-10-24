@@ -352,6 +352,12 @@ fun SessionsCard(vm: PendantViewModel) {
             } else {
                 Text("${sessions.size} recording sessions",
                      style = MaterialTheme.typography.bodySmall)
+                val pickTranscripts = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenMultipleDocuments()
+                ) { uris -> if (uris.isNotEmpty()) vm.importTranscripts(uris) }
+                Button(onClick = { pickTranscripts.launch(arrayOf("*/*")) }) {
+                    Text("Import transcript files")
+                }
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
                     items(sessions) { sess ->
                         val playing = player is PendantViewModel.PlayerState.Playing &&
@@ -374,7 +380,7 @@ fun SessionsCard(vm: PendantViewModel) {
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
-                            val hasTranscript = remember(sess.session) { vm.transcriptFile(sess.session).exists() }
+                            val hasTranscript = vm.transcriptFile(sess.session).exists()
                             val paused = player is PendantViewModel.PlayerState.Paused &&
                                 (player as PendantViewModel.PlayerState.Paused).session == sess.session
                             IconButton({ vm.playSession(sess.session) },

@@ -841,7 +841,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 start += step
                 continue
             }
+            val t0 = System.currentTimeMillis()
             val raw = WhisperBridge.nativeTranscribe(piece, threads) ?: ""
+            val tookSec = (System.currentTimeMillis() - t0) / 1000
+            onNote("chunk $idx of ~$approxTotal done in ${tookSec}s", idx.toFloat() / approxTotal)
             val offset = start / 16000.0
             val newSegs = parseSegments(raw, offset)
             if (segs.isNotEmpty() && newSegs.isNotEmpty()) {
@@ -1074,6 +1077,37 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     /** Full transcript text for the in-app viewer, or null when none is saved. */
     fun transcriptText(session: Int): String? =
         transcriptFile(session).takeIf { it.exists() }?.readText()
+
+    /** Import transcript text files picked with the SAF picker. File names
+     *  must carry the session number, e.g. session-14.txt or transcript-14.txt. */
+    fun importTranscripts(uris: List<android.net.Uri>) {
+        scope.launch(Dispatchers.Default) {
+            val app = getApplication<Application>()
+            val cr = app.contentResolver
+            val re = Regex("(?:session|transcript)[-_ ]?(\\d+)", RegexOption.IGNORE_CASE)
+            var ok = 0
+            var skipped = 0
+            for (u in uris) {
+                try {
+                    val name = cr.query(u, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                                        null, null, null)?.use { c ->
+                        if (c.moveToFirst()) c.getString(0) else null
+                    } ?: (u.lastPathSegment ?: "")
+                    val m = re.find(name)
+                    if (m == null) { skipped++; continue }
+                    val session = m.groupValues[1].toInt()
+                    val text = cr.openInputStream(u)?.bufferedReader()?.use { it.readText() } ?: ""
+                    if (text.isNotBlank()) {
+                        transcriptFile(session).writeText(text)
+                        ok++
+                    } else skipped++
+                } catch (_: Exception) { skipped++ }
+            }
+            _trans.value = TransState.Done(-1,
+                "Imported $ok transcript files, $skipped skipped. File names must include the session number (session-14.txt).")
+            refreshSessions()
+        }
+    }
 
     fun transcriptFile(session: Int): java.io.File =
         java.io.File(
