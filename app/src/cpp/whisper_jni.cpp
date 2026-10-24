@@ -6,25 +6,26 @@
 #define TAG "PendantWhisper"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
-static whisper_context *g_ctx = nullptr;
-
-extern "C" JNIEXPORT jboolean JNICALL
+// Handle-based contexts: nativeInit returns its own whisper_context, so the
+// batch can run several model instances in parallel (one per worker thread).
+// 0 means the model file failed to load.
+extern "C" JNIEXPORT jlong JNICALL
 Java_com_pendantcompanion_protocol_WhisperBridge_nativeInit(JNIEnv *env, jobject, jstring modelPath) {
-    if (g_ctx) { whisper_free(g_ctx); g_ctx = nullptr; }
     const char *path = env->GetStringUTFChars(modelPath, nullptr);
-    if (!path) return JNI_FALSE;
+    if (!path) return 0;
     whisper_context_params cparams = whisper_context_default_params();
     cparams.use_gpu = false; // CPU only, no vendor GPU dependency
-    g_ctx = whisper_init_from_file_with_params(path, cparams);
+    whisper_context *ctx = whisper_init_from_file_with_params(path, cparams);
     env->ReleaseStringUTFChars(modelPath, path);
-    LOGI("whisper init %s", g_ctx ? "ok" : "failed");
-    return g_ctx ? JNI_TRUE : JNI_FALSE;
+    LOGI("whisper init %s", ctx ? "ok" : "failed");
+    return (jlong) (intptr_t) ctx;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pendantcompanion_protocol_WhisperBridge_nativeTranscribe(JNIEnv *env, jobject,
-                                                                  jfloatArray samples, jint threads) {
-    if (!g_ctx) return nullptr;
+                                                                  jlong handle, jfloatArray samples, jint threads) {
+    whisper_context *ctx = (whisper_context *) (intptr_t) handle;
+    if (!ctx) return nullptr;
     jsize n = env->GetArrayLength(samples);
     jfloat *data = env->GetFloatArrayElements(samples, nullptr);
     whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
@@ -36,14 +37,14 @@ Java_com_pendantcompanion_protocol_WhisperBridge_nativeTranscribe(JNIEnv *env, j
     wparams.print_timestamps = false;
     wparams.no_context = true;
     wparams.single_segment = false;
-    bool ok = whisper_full(g_ctx, wparams, data, n) == 0;
+    bool ok = whisper_full(ctx, wparams, data, n) == 0;
     env->ReleaseFloatArrayElements(samples, data, JNI_ABORT);
     if (!ok) return nullptr;
     std::string out;
-    int nseg = whisper_full_n_segments(g_ctx);
+    int nseg = whisper_full_n_segments(ctx);
     for (int i = 0; i < nseg; i++) {
-        int64_t t0 = whisper_full_get_segment_t0(g_ctx, i); // centiseconds
-        const char *text = whisper_full_get_segment_text(g_ctx, i);
+        int64_t t0 = whisper_full_get_segment_t0(ctx, i); // centiseconds
+        const char *text = whisper_full_get_segment_text(ctx, i);
         if (!text) continue;
         long sec = (long)(t0 / 100);
         char stamp[16];
@@ -56,6 +57,7 @@ Java_com_pendantcompanion_protocol_WhisperBridge_nativeTranscribe(JNIEnv *env, j
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_pendantcompanion_protocol_WhisperBridge_nativeFree(JNIEnv*, jobject) {
-    if (g_ctx) { whisper_free(g_ctx); g_ctx = nullptr; }
+Java_com_pendantcompanion_protocol_WhisperBridge_nativeFree(JNIEnv*, jobject, jlong handle) {
+    whisper_context *ctx = (whisper_context *) (intptr_t) handle;
+    if (ctx) whisper_free(ctx);
 }

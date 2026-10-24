@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -353,6 +354,17 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 } catch (_: Exception) { /* storage readout failed: do the full sync */ }
                 val ack = ackMode.value
+                // Progress is throttled to one emission every 500 ms instead
+                // of one per page, which used to drown the main thread during
+                // a multi-thousand-page sync.
+                var lastEmit = 0L
+                fun prog(p: Int, fr: Long, by: Long, idx: Int, msg: String) {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (now - lastEmit >= 500) {
+                        lastEmit = now
+                        syncProgress.value = SyncProgress(p, fr, by, idx, false, msg)
+                    }
+                }
                 syncProgress.value = SyncProgress(0, 0, 0, -1, false, "starting download mode")
                 s.storageListener = { buf ->
                     val page = buf.flashPage.toByteArray()
@@ -367,19 +379,35 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                             // original file, only count the transfer
                             skipped++
                             ackThisPage = true
-                            syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, false,
-                                "page ${fp.index} already saved — skipping (${skipped} so far)")
+                            prog(pages, frames, bytes, lastIdx,
+                                "page ${fp.index} already on this phone, skipping (${skipped} so far)")
                         } else {
-                            java.io.FileOutputStream(f).use { fos ->
-                                fos.write(fp.rawPageBytes)
-                                fos.fd.sync()
+                            if (ack) {
+                                // Acknowledge mode erases the pendant copy once a
+                                // page is durably saved, so it keeps the fsync.
+                                java.io.FileOutputStream(f).use { fos ->
+                                    fos.write(fp.rawPageBytes)
+                                    fos.fd.sync()
+                                }
+                                ackThisPage = f.length() == fp.rawPageBytes.size.toLong()
+                            } else {
+                                // Read-only fast path: buffered write + atomic
+                                // rename, no per-page fsync. A crash can lose a
+                                // page but never half-write one, and the pendant
+                                // keeps its own copy regardless.
+                                val tmp = java.io.File(dir, f.name + ".part")
+                                java.io.FileOutputStream(tmp).use { it.write(fp.rawPageBytes) }
+                                if (!tmp.renameTo(f)) {
+                                    tmp.delete()
+                                    java.io.FileOutputStream(f).use { it.write(fp.rawPageBytes) }
+                                }
+                                ackThisPage = true
                             }
-                            ackThisPage = f.length() == fp.rawPageBytes.size.toLong()
                             pages++
                             frames += fp.opusFrames.size
                             bytes += fp.rawPageBytes.size
                             lastIdx = fp.index
-                            syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, false,
+                            prog(pages, frames, bytes, lastIdx,
                                 "page ${fp.index} (${fp.rawPageBytes.size} B, ${fp.opusFrames.size} frames)")
                         }
                         if (ack && ackThisPage) scope.launch(Dispatchers.IO) {
@@ -783,8 +811,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 getApplication<Application>()
                     .getSharedPreferences("pendant", android.content.Context.MODE_PRIVATE)
                     .edit().putString("whisper_model_path", dst.absolutePath).commit()
-                val ok = WhisperBridge.nativeInit(dst.absolutePath)
+                val h = WhisperBridge.nativeInit(dst.absolutePath)
+                val ok = h != 0L
                 _model.value = ModelInfo(dst.absolutePath, dst.length(), ok)
+                if (ok) WhisperBridge.nativeFree(h) // validation load only; real passes open their own context
                 if (!ok) {
                     _trans.value = TransState.TransError(-1, "Whisper did not load that file; is it a ggml .bin model?")
                 }
@@ -810,11 +840,13 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
      * old single-pass one.
      */
     private fun transcribeChunked(
+        handle: Long,
         samples: FloatArray,
         threads: Int,
         onNote: (String, Float) -> Unit,
     ): String {
         if (samples.isEmpty()) return ""
+        if (handle == 0L) throw IllegalStateException("Whisper context not loaded")
         val chunk = 480_000    // 30 s at 16 kHz
         val overlap = 16_000   // 1 s
         val minTail = 80_000   // fold a remainder shorter than 5 s into the last window
@@ -842,7 +874,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 continue
             }
             val t0 = System.currentTimeMillis()
-            val raw = WhisperBridge.nativeTranscribe(piece, threads) ?: ""
+            val raw = WhisperBridge.nativeTranscribe(handle, piece, threads) ?: ""
             val tookSec = (System.currentTimeMillis() - t0) / 1000
             onNote("chunk $idx of ~$approxTotal done in ${tookSec}s", idx.toFloat() / approxTotal)
             val offset = start / 16000.0
@@ -891,6 +923,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     fun transcribeSession(session: Int) {
         if (transJob?.isActive == true || BatchRunner.job?.isActive == true) return
         transJob = scope.launch(Dispatchers.Default) {
+            var h = 0L
             try {
                 val mf = modelFile()
                 if (!mf.exists() || mf.length() < 10_000_000) {
@@ -900,14 +933,15 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _trans.value = TransState.Running(session, "decoding audio")
                 val wav = decodeSessionWav(session)
                 _trans.value = TransState.Running(session, "loading Whisper model")
-                if (!WhisperBridge.nativeInit(mf.absolutePath)) {
+                h = WhisperBridge.nativeInit(mf.absolutePath)
+                if (h == 0L) {
                     throw IllegalStateException("Whisper failed to load the model file")
                 }
                 _model.value = _model.value.copy(ready = true)
                 _trans.value = TransState.Running(session, "transcribing")
                 val samples = wavToSamples(wav)
                 transCancel.set(false)
-                val text = transcribeChunked(samples, minOf(Runtime.getRuntime().availableProcessors(), 6)) { note, _ ->
+                val text = transcribeChunked(h, samples, minOf(Runtime.getRuntime().availableProcessors(), 6)) { note, _ ->
                     _trans.value = TransState.Running(session, note)
                 }
                 if (text.isBlank()) {
@@ -922,6 +956,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     _trans.value = TransState.TransError(session, "Transcription failed: ${e.message ?: e.javaClass.simpleName}")
                 }
+            } finally {
+                if (h != 0L) WhisperBridge.nativeFree(h)
             }
         }
     }
@@ -951,55 +987,88 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _trans.value = TransState.TransError(-1, "No Whisper model loaded. Tap Load model file first.")
                 return
             }
-            val threads = minOf(Runtime.getRuntime().availableProcessors(), 6)
+            val cores = Runtime.getRuntime().availableProcessors()
+            // Several independent Whisper contexts transcribe different
+            // sessions at once. Small models (tiny.en, ~32 MB) allow 3
+            // workers; larger ones (base.en and up) use 2 to stay in memory.
+            val workers = if (mf.length() > 50_000_000) 2 else 3
+            val perWorker = maxOf(2, cores / workers)
             val targets = _sessions.value.filter { it.frames > 0 }.sortedBy { it.session }
             if (targets.isEmpty()) return
-            BatchRunner.state.value = BatchProgress(0, targets.size, -1, 0, "loading Whisper model")
+            val total = targets.size
+            val done = java.util.concurrent.atomic.AtomicInteger(0)
+            val failed = java.util.concurrent.atomic.AtomicInteger(0)
+            val next = java.util.concurrent.atomic.AtomicInteger(0)
+            // Sessions over ~20 min decode into a large float array; only one
+            // of those is kept in memory at a time, smaller ones run freely.
+            val bigLock = java.util.concurrent.Semaphore(1)
+            val firstEmitted = java.util.concurrent.atomic.AtomicBoolean(false)
+            BatchRunner.state.value = BatchProgress(0, total, -1, 0,
+                "loading Whisper model x$workers in parallel")
             val loadStart = System.currentTimeMillis()
             val ticker = BatchRunner.scope.launch {
                 while (true) {
                     kotlinx.coroutines.delay(5_000)
                     val secs = (System.currentTimeMillis() - loadStart) / 1000
-                    BatchRunner.state.value = BatchProgress(0, targets.size, -1, 0,
-                        "loading Whisper model (${secs}s elapsed)")
+                    BatchRunner.state.value = BatchProgress(0, total, -1, 0,
+                        "loading Whisper model x$workers (${secs}s elapsed)")
                 }
             }
-            val loaded = WhisperBridge.nativeInit(mf.absolutePath)
-            ticker.cancel()
-            if (!loaded) {
-                throw IllegalStateException("Whisper failed to load the model file")
-            }
-            _model.value = _model.value.copy(ready = true)
-            var done = 0
-            var failed = 0
-            for (s in targets) {
-                if (transcriptFile(s.session).exists()) { done++; continue }
-                var lastNote = ""
-                try {
-                    lastNote = "decoding audio"
-                    BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, lastNote)
-                    val wav = decodeSessionWav(s.session)
-                    lastNote = "transcribing"
-                    BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, lastNote)
-                    val samples = wavToSamples(wav)
-                    transCancel.set(false)
-                    val text = transcribeChunked(samples, threads) { note, frac ->
-                        lastNote = note
-                        BatchRunner.state.value =
-                            BatchProgress(done, targets.size, s.session, failed, note,
-                                          (done + frac) / targets.size)
+            transCancel.set(false)
+            try {
+                kotlinx.coroutines.coroutineScope {
+                    repeat(workers) { w ->
+                        launch(kotlinx.coroutines.Dispatchers.Default) {
+                            val h = WhisperBridge.nativeInit(mf.absolutePath)
+                            if (h == 0L) { failed.incrementAndGet(); return@launch }
+                            _model.value = _model.value.copy(ready = true)
+                            try {
+                                while (true) {
+                                    ensureActive()
+                                    if (transCancel.get()) break
+                                    val i = next.getAndIncrement()
+                                    if (i >= total) break
+                                    val s = targets[i]
+                                    if (transcriptFile(s.session).exists()) { done.incrementAndGet(); continue }
+                                    var lastNote = ""
+                                    try {
+                                        val big = s.durationSec > 1200
+                                        if (big) bigLock.acquire()
+                                        try {
+                                            lastNote = "decoding audio"
+                                            BatchRunner.state.value = BatchProgress(done.get(), total, s.session, failed.get(),
+                                                "session ${s.session}: $lastNote")
+                                            val wav = decodeSessionWav(s.session)
+                                            lastNote = "transcribing"
+                                            BatchRunner.state.value = BatchProgress(done.get(), total, s.session, failed.get(),
+                                                "session ${s.session}: $lastNote")
+                                            val samples = wavToSamples(wav)
+                                            val text = transcribeChunked(h, samples, perWorker) { note, frac ->
+                                                lastNote = note
+                                                if (firstEmitted.compareAndSet(false, true)) ticker.cancel()
+                                                BatchRunner.state.value = BatchProgress(done.get(), total, s.session, failed.get(),
+                                                    "session ${s.session}: $note", (done.get() + frac) / total)
+                                            }
+                                            if (text.isBlank()) throw IllegalStateException("No speech detected in this session (only silence, music or radio)")
+                                            transcriptFile(s.session).writeText(text)
+                                            done.incrementAndGet()
+                                        } finally { if (big) bigLock.release() }
+                                    } catch (e: Throwable) {
+                                        if (transCancel.get()) break
+                                        failed.incrementAndGet()
+                                        lastNote = "failed: ${e.message?.take(80) ?: e.javaClass.simpleName}"
+                                    }
+                                    BatchRunner.state.value = BatchProgress(done.get(), total, s.session, failed.get(),
+                                        "session ${s.session}: $lastNote")
+                                }
+                            } finally {
+                                WhisperBridge.nativeFree(h)
+                            }
+                        }
                     }
-                    if (text.isBlank()) throw IllegalStateException("No speech detected in this session (only silence, music or radio)")
-                    transcriptFile(s.session).writeText(text)
-                    done++
-                } catch (e: Throwable) {
-                    if (transCancel.get()) break
-                    failed++
-                    lastNote = "failed: ${e.message?.take(80) ?: e.javaClass.simpleName}"
                 }
-                BatchRunner.state.value = BatchProgress(done, targets.size, s.session, failed, lastNote)
-            }
-            BatchRunner.state.value = BatchProgress(done, targets.size, -1, failed, "finished", 1f)
+            } finally { ticker.cancel() }
+            BatchRunner.state.value = BatchProgress(done.get(), total, -1, failed.get(), "finished", 1f)
             kotlinx.coroutines.delay(30_000)
             BatchRunner.state.value = null
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1226,7 +1295,6 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         stopPlayback()
         transJob?.cancel()
-        WhisperBridge.nativeFree()
         syncJob?.cancel()
         scope.cancel()
         session?.close()

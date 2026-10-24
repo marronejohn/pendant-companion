@@ -9,7 +9,12 @@ package com.pendantcompanion.protocol
 object WhisperBridge {
     init { System.loadLibrary("pendantwhisper") }
 
-    external fun nativeInit(modelPath: String): Boolean
-    external fun nativeTranscribe(samples: FloatArray, threads: Int): String?
-    external fun nativeFree()
+    /**
+     * Loads a ggml model and returns an independent context handle (0 on
+     * failure). Several handles can run Whisper passes concurrently, which
+     * is what the parallel batch uses; each handle is freed with [nativeFree].
+     */
+    external fun nativeInit(modelPath: String): Long
+    external fun nativeTranscribe(handle: Long, samples: FloatArray, threads: Int): String?
+    external fun nativeFree(handle: Long)
 }

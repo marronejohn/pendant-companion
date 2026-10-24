@@ -184,6 +184,17 @@ class PendantGattClient(
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             negotiatedMtu = mtu
+            // Throughput requests: high connection priority (short interval,
+            // what bulk page transfers want) plus 2M PHY when the pendant
+            // supports it. Both are silent no-ops if refused.
+            try {
+                g.requestConnectionPriority(
+                    android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                g.setPreferredPhy(
+                    android.bluetooth.BluetoothDevice.PHY_LE_2M_MASK,
+                    android.bluetooth.BluetoothDevice.PHY_LE_2M_MASK,
+                    android.bluetooth.BluetoothDevice.PHY_OPTION_NO_PREFERRED)
+            } catch (_: Exception) {}
             if (!g.discoverServices()) {
                 closeGatt()
                 listener.onClosed("Service discovery could not start")
