@@ -830,6 +830,17 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             if (end < samples.size && samples.size - end < minTail) end = samples.size
             onNote("transcribing chunk $idx of ~$approxTotal", idx.toFloat() / approxTotal)
             val piece = java.util.Arrays.copyOfRange(samples, start, end)
+            // A full Whisper pass costs the same on dead air as on speech (the
+            // encoder dominates), so near-silent windows are skipped outright.
+            var energy = 0.0
+            for (v in piece) energy += v.toDouble() * v
+            val rms = kotlin.math.sqrt(energy / piece.size)
+            if (rms < 0.0015) {
+                onNote("chunk $idx: silence, skipped", idx.toFloat() / approxTotal)
+                if (end >= samples.size) break
+                start += step
+                continue
+            }
             val raw = WhisperBridge.nativeTranscribe(piece, threads) ?: ""
             val offset = start / 16000.0
             val newSegs = parseSegments(raw, offset)
