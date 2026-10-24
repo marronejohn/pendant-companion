@@ -1178,6 +1178,21 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Deletes every transcript file (session_N.txt). The recordings on the
+     *  phone and on the pendant are untouched; the batch simply re-transcribes
+     *  those sessions on its next run. */
+    fun clearAllTranscripts() {
+        scope.launch(Dispatchers.Default) {
+            val dir = java.io.File(getApplication<Application>().filesDir, "transcripts")
+            val files = dir.listFiles { f -> f.name.startsWith("session_") && f.name.endsWith(".txt") }.orEmpty()
+            var n = 0
+            for (f in files) if (f.delete()) n++
+            _trans.value = TransState.Done(-1,
+                "Cleared $n transcript files. The batch will re-transcribe those sessions on its next run.")
+            refreshSessions()
+        }
+    }
+
     fun transcriptFile(session: Int): java.io.File =
         java.io.File(
             java.io.File(getApplication<Application>().filesDir, "transcripts").apply { mkdirs() },

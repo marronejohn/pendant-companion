@@ -358,6 +358,23 @@ fun SessionsCard(vm: PendantViewModel) {
                 Button(onClick = { pickTranscripts.launch(arrayOf("*/*")) }) {
                     Text("Import transcript files")
                 }
+                var confirmingClear by remember { mutableStateOf(false) }
+                Button(onClick = { confirmingClear = true }) {
+                    Text("Clear all transcripts")
+                }
+                if (confirmingClear) {
+                    AlertDialog(
+                        onDismissRequest = { confirmingClear = false },
+                        title = { Text("Clear all transcripts?") },
+                        text = { Text("This deletes every transcript in the app. The recordings themselves are untouched, and the batch will re-transcribe those sessions on its next run.") },
+                        confirmButton = {
+                            TextButton(onClick = { confirmingClear = false; vm.clearAllTranscripts() }) { Text("Clear") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmingClear = false }) { Text("Cancel") }
+                        },
+                    )
+                }
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
                     items(sessions) { sess ->
                         val playing = player is PendantViewModel.PlayerState.Playing &&
