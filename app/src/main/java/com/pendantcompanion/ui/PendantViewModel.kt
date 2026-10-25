@@ -480,7 +480,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true, note)
-                if (autoTranscribe.value && (pages > 0 || skipped > 0)) {
+                if (autoTranscribe.value && !clearAllInProgress && (pages > 0 || skipped > 0)) {
                     scope.launch(Dispatchers.Default) {
                         refreshSessions()
                         transcribeAllSessions()
@@ -742,6 +742,100 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _storageNote.value = "could not erase: ${e.message}"
             }
         }
+    }
+
+    @Volatile private var clearAllInProgress = false
+
+    /** Clear everything: full read-only sync first so nothing is lost, then
+     *  erase every pendant page already saved on this phone, delete all local
+     *  recordings, exports, transcripts and backup zips (the Whisper model is
+     *  kept), and delete every mirrored transcript copy in the Drive folder.
+     *  Recordings that failed to sync stay on the pendant. The Limitless
+     *  cloud itself is untouched (the app has no internet permission). */
+    fun clearEverything() {
+        val s = session
+        if (s == null) {
+            _trans.value = TransState.Done(-1, "Connect the pendant first, then tap Clear everything.")
+            return
+        }
+        clearAllInProgress = true
+        scope.launch(Dispatchers.IO) {
+            val notes = mutableListOf<String>()
+            try {
+                if (syncJob?.isActive != true) {
+                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                        syncProgress.value = SyncProgress(0, 0, 0, -1, false,
+                            "clear all: syncing first so nothing is lost")
+                        syncReadOnly()
+                    }
+                    while (syncJob?.isActive == true) kotlinx.coroutines.delay(500)
+                    notes.add("final sync done")
+                } else {
+                    notes.add("used the sync already running")
+                }
+                try {
+                    val re = Regex("page_(\\d+)_session\\d+\\.bin")
+                    val maxSaved = flashPagesDir()
+                        .listFiles { f -> f.name.startsWith("page_") }
+                        ?.mapNotNull { re.find(it.name)?.groupValues?.get(1)?.toInt() }?.maxOrNull()
+                    if (maxSaved != null) {
+                        s.deleteFlashPageUpTo(maxSaved)
+                        kotlinx.coroutines.delay(600)
+                        notes.add("pendant erased up to page $maxSaved")
+                    } else {
+                        notes.add("nothing on the pendant to erase")
+                    }
+                } catch (e: Exception) {
+                    notes.add("pendant erase failed: ${e.message}")
+                }
+                var files = 0
+                for (name in listOf("flash_pages", "exports", "transcripts", "backups", "backup")) {
+                    val d = java.io.File(getApplication<Application>().filesDir, name)
+                    d.listFiles()?.forEach { if (it.deleteRecursively()) files++ }
+                }
+                getApplication<Application>().filesDir
+                    .listFiles()?.forEach { f -> if (f.name.endsWith(".zip") && f.delete()) files++ }
+                notes.add("$files local files deleted")
+                val wiped = wipeDriveTranscripts()
+                notes.add("$wiped Drive copies deleted")
+            } catch (e: Exception) {
+                notes.add("stopped: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                clearAllInProgress = false
+                refreshSessions()
+                try { _storageView.value = storageStatus(s) } catch (_: Exception) {}
+                _trans.value = TransState.Done(-1, "Clear all: " + notes.joinToString("; ") + ".")
+            }
+        }
+    }
+
+    /** Deletes every mirrored transcript copy in the picked Drive folder. */
+    private fun wipeDriveTranscripts(): Int {
+        var n = 0
+        try {
+            val uriStr = prefs.getString("drive_tree_uri", null) ?: return 0
+            val treeUri = android.net.Uri.parse(uriStr)
+            val cr = getApplication<Application>().contentResolver
+            val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+            val childrenUri = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+            val victims = mutableListOf<android.net.Uri>()
+            cr.query(childrenUri, arrayOf(
+                android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c ->
+                val iId = c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val iName = c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                while (c.moveToNext()) {
+                    val name = c.getString(iName) ?: continue
+                    if (Regex("^\\d{4}-\\d{2}-\\d{2}_session-\\d+\\.txt$").matchEntire(name) != null) {
+                        victims.add(android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, c.getString(iId)))
+                    }
+                }
+            }
+            for (u in victims) {
+                try { if (android.provider.DocumentsContract.deleteDocument(cr, u)) n++ } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+        return n
     }
 
     // ----- pendant LED brightness -----

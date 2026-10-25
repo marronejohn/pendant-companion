@@ -773,6 +773,23 @@ fun StorageCard(vm: PendantViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
             note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            var confirmingClearAll by remember { mutableStateOf(false) }
+            Button(onClick = { confirmingClearAll = true }) {
+                Text("Clear everything")
+            }
+            if (confirmingClearAll) {
+                AlertDialog(
+                    onDismissRequest = { confirmingClearAll = false },
+                    title = { Text("Clear everything?") },
+                    text = { Text("This will: sync the pendant one last time so nothing is lost; erase every pendant page already saved on this phone; delete all recordings, exports, transcripts and backup zips on this phone (the Whisper model is kept); and delete every transcript copy in your Drive folder. Recordings that failed to sync stay on the pendant. The Limitless cloud is handled by your account-deletion request.") },
+                    confirmButton = {
+                        TextButton(onClick = { confirmingClearAll = false; vm.clearEverything() }) { Text("Clear everything") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { confirmingClearAll = false }) { Text("Cancel") }
+                    },
+                )
+            }
         }
     }
 }
