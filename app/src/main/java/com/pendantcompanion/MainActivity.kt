@@ -750,6 +750,23 @@ fun StorageCard(vm: PendantViewModel) {
                     },
                 )
             }
+            var confirmingFactoryReset by remember { mutableStateOf(false) }
+            Button(onClick = { confirmingFactoryReset = true }) {
+                Text("Factory reset pendant")
+            }
+            if (confirmingFactoryReset) {
+                AlertDialog(
+                    onDismissRequest = { confirmingFactoryReset = false },
+                    title = { Text("Factory reset the pendant?") },
+                    text = { Text("This wipes the pendant's ENTIRE flash, including anything not yet synced to this phone. It cannot be undone, and the pendant will likely need re-pairing afterwards because it may reset its keys. If you want to keep anything, sync first.") },
+                    confirmButton = {
+                        TextButton(onClick = { confirmingFactoryReset = false; vm.factoryResetPendant() }) { Text("Factory reset") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { confirmingFactoryReset = false }) { Text("Cancel") }
+                    },
+                )
+            }
         }
     }
 }

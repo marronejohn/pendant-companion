@@ -165,6 +165,16 @@ class PendantSession(
             .setOlderThanOrEqualToIndex(index).build()
     }
 
+    /**
+     * Nuclear option: FactoryResetPendant wipes the pendant's ENTIRE flash,
+     * including anything not yet synced to the phone, and may reset the
+     * device keys so re-pairing is needed afterwards. One-way command, no
+     * ack expected. Called only from the explicit factory-reset UI button.
+     */
+    suspend fun factoryResetPendant() = sendOneway {
+        it.factoryResetPendant = Server.FactoryResetPendant.getDefaultInstance()
+    }
+
     /** Download mode: pendant pushes stored flash pages as StorageBufferMsgs. */
     suspend fun beginBatchDownload() = sendOneway {
         it.downloadFlashPages = Server.DownloadFlashPages.newBuilder()

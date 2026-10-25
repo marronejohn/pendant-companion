@@ -809,6 +809,26 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Factory reset: sends FactoryResetPendant, wiping the pendant's ENTIRE
+     *  flash including anything not yet synced. The pendant may reset its
+     *  keys, so re-pairing may be needed afterwards. */
+    fun factoryResetPendant() {
+        val s = session ?: run {
+            _storageNote.value = "connect the pendant first"
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            try {
+                s.factoryResetPendant()
+                kotlinx.coroutines.delay(1000)
+                _storageNote.value = "factory reset command sent: the pendant wipes its flash and may restart. If the connection drops, re-pair from the app."
+                try { _storageView.value = storageStatus(s) } catch (_: Exception) {}
+            } catch (e: Exception) {
+                _storageNote.value = "factory reset failed: ${e.message}"
+            }
+        }
+    }
+
     /** Deletes every mirrored transcript copy in the picked Drive folder. */
     private fun wipeDriveTranscripts(): Int {
         var n = 0
