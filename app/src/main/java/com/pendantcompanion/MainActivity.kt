@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -216,7 +217,8 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
     ) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Device information (read-only)", style = MaterialTheme.typography.titleMedium)
+                Text("Device information (read-only)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("Serial: ${i.serial.ifEmpty { "not reported" }}")
                 Text("Firmware: ${i.firmware.ifEmpty { "not reported" }}")
                 Text("Battery: ${i.batteryPercent}%")
@@ -305,7 +307,8 @@ fun SessionsCard(vm: PendantViewModel) {
     }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Recordings from the pendant on this phone", style = MaterialTheme.typography.titleMedium)
+            Text("Recordings from the pendant on this phone", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
             if (sessions.isEmpty()) {
                 Text("Nothing saved yet. Tap Download flash first.",
                      style = MaterialTheme.typography.bodySmall)
@@ -428,7 +431,8 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
     LaunchedEffect(Unit) { vm.refreshModelInfo() }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("On-device transcription (Whisper)", style = MaterialTheme.typography.titleMedium)
+            Text("On-device transcription (Whisper)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
             val mp = model.path
             if (mp == null) {
                 Text("No model loaded. Pick a ggml .bin Whisper model file (no internet needed). tiny.en works; base.en or small.en .bin models also load the same way for noticeably better transcripts.",
@@ -495,7 +499,8 @@ fun SearchCard(vm: PendantViewModel) {
     var viewing by remember { mutableStateOf<Int?>(null) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Search your recordings", style = MaterialTheme.typography.titleMedium)
+            Text("Search your recordings", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
             Text(
                 "Finds words in transcripts. Transcribe a session (the TR icon) first. Everything runs on this phone.",
                 style = MaterialTheme.typography.bodySmall,
@@ -625,7 +630,8 @@ fun LedCard(vm: PendantViewModel) {
     LaunchedEffect(Unit) { vm.refreshLedBrightness() }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Pendant LED", style = MaterialTheme.typography.titleMedium)
+            Text("Pendant LED", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
             Text(
                 led.reported?.let { "Pendant reports LED brightness: $it" } ?: "Pendant has not reported an LED brightness yet.",
                 style = MaterialTheme.typography.bodySmall,
@@ -658,6 +664,8 @@ fun AckCard(vm: PendantViewModel) {
     ) { uri -> if (uri != null) vm.setDriveFolder(uri) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Sync & automation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Acknowledge pages after sync", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 Switch(checked = ack, onCheckedChange = { vm.setAckMode(it) })
@@ -706,7 +714,8 @@ fun StorageCard(vm: PendantViewModel) {
     var confirming by remember { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Pendant storage", style = MaterialTheme.typography.titleMedium)
+            Text("Pendant storage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
             val s = st
             if (s == null) {
                 Text("Connect to read the pendant's storage.", style = MaterialTheme.typography.bodySmall)
