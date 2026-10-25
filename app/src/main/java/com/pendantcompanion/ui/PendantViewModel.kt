@@ -108,7 +108,6 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
-        refreshSpeakerInfo()
     }
 
     /** One pendant recording session found among the saved flash pages. */
@@ -189,6 +188,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private var speakerVecs = mutableMapOf<Int, FloatArray>()
     private var speakerCentroid: FloatArray? = null
     private var lastQuery = ""
+
+    init {
+        refreshSpeakerInfo()
+    }
 
     fun setSearchOnlyYou(on: Boolean) {
         _searchOnlyYou.value = on
