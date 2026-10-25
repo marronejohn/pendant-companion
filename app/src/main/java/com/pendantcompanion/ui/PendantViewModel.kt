@@ -130,6 +130,30 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("ack_mode", on).apply()
     }
 
+    private val _autoTranscribe = MutableStateFlow(prefs.getBoolean("auto_transcribe", true))
+    val autoTranscribe: StateFlow<Boolean> = _autoTranscribe
+    fun setAutoTranscribe(on: Boolean) {
+        _autoTranscribe.value = on
+        prefs.edit().putBoolean("auto_transcribe", on).apply()
+    }
+
+    private val _driveFolder = MutableStateFlow(prefs.getString("drive_tree_uri", null))
+    val driveFolder: StateFlow<String?> = _driveFolder
+
+    /** One-time grant: the user picks a Drive folder in the system picker and
+     *  the app keeps persistable read/write to it. Transcripts are mirrored
+     *  there through the system document provider, so the app itself stays
+     *  offline (no INTERNET permission). */
+    fun setDriveFolder(uri: android.net.Uri) {
+        try {
+            getApplication<Application>().contentResolver.takePersistableUriPermission(
+                uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                     android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        } catch (_: Exception) {}
+        prefs.edit().putString("drive_tree_uri", uri.toString()).apply()
+        _driveFolder.value = uri.toString()
+    }
+
     // Auto-sync on connect (default on): after the pendant connects and
     // inspection succeeds, a read-only sync starts automatically, and the
     // backup zip is refreshed afterwards when new pages were saved.
@@ -456,6 +480,12 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true, note)
+                if (autoTranscribe.value && (pages > 0 || skipped > 0)) {
+                    scope.launch(Dispatchers.Default) {
+                        refreshSessions()
+                        transcribeAllSessions()
+                    }
+                }
             } catch (e: Exception) {
                 try { s.stopBatchDownload() } catch (_: Exception) {}
                 syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true,
@@ -1050,7 +1080,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                                                     "session ${s.session}: $note", (done.get() + frac) / total)
                                             }
                                             if (text.isBlank()) throw IllegalStateException("No speech detected in this session (only silence, music or radio)")
-                                            transcriptFile(s.session).writeText(text)
+                                            saveTranscript(s.session, text)
                                             done.incrementAndGet()
                                         } finally { if (big) bigLock.release() }
                                     } catch (e: Throwable) {
@@ -1174,6 +1204,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             }
             _trans.value = TransState.Done(-1,
                 "Imported $ok transcript files, $skipped skipped. File names must include the session number (session-14.txt).")
+            if (ok > 0) synchronized(driveMirrorLock) { mirrorTranscriptsToDrive() }
             refreshSessions()
         }
     }
@@ -1191,6 +1222,83 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 "Cleared $n transcript files. The batch will re-transcribe those sessions on its next run.")
             refreshSessions()
         }
+    }
+
+    private val driveMirrorLock = Any()
+
+    /** Saves a transcript locally and mirrors it into the picked Drive folder
+     *  as YYYY-MM-DD_session-N.txt, pruning mirrored copies older than 14
+     *  days so Drive never accumulates them. */
+    fun saveTranscript(session: Int, text: String) {
+        transcriptFile(session).writeText(text)
+        synchronized(driveMirrorLock) { mirrorTranscriptsToDrive() }
+    }
+
+    private fun mirrorTranscriptsToDrive() {
+        try {
+            val uriStr = prefs.getString("drive_tree_uri", null) ?: return
+            val treeUri = android.net.Uri.parse(uriStr)
+            val cr = getApplication<Application>().contentResolver
+            val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+            val treeDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+            val dir = java.io.File(getApplication<Application>().filesDir, "transcripts")
+            val files = dir.listFiles { f -> f.name.startsWith("session_") && f.name.endsWith(".txt") } ?: return
+            for (f in files) {
+                val m = Regex("session_(\\d+)\\.txt").find(f.name) ?: continue
+                val name = "${today}_session-${m.groupValues[1]}.txt"
+                if (treeHasChild(cr, treeUri, docId, name)) continue
+                val created = try {
+                    android.provider.DocumentsContract.createDocument(cr, treeDocUri, "text/plain", name)
+                } catch (_: Exception) { null } ?: continue
+                try { cr.openOutputStream(created)?.use { it.write(f.readBytes()) } } catch (_: Exception) {}
+            }
+            pruneOldDriveTranscripts(cr, treeUri, docId)
+        } catch (_: Exception) {}
+    }
+
+    private fun treeHasChild(
+        cr: android.content.ContentResolver, treeUri: android.net.Uri, docId: String, name: String,
+    ): Boolean {
+        return try {
+            val childrenUri = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+            cr.query(childrenUri, arrayOf(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                     null, null, null)?.use { c ->
+                val col = c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                while (c.moveToNext()) if (c.getString(col) == name) return true
+            }
+            false
+        } catch (_: Exception) { false }
+    }
+
+    /** Deletes mirrored transcript files whose date prefix is older than 14 days. */
+    private fun pruneOldDriveTranscripts(
+        cr: android.content.ContentResolver, treeUri: android.net.Uri, docId: String,
+    ): Int {
+        var n = 0
+        try {
+            val cutoff = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .format(java.util.Date(System.currentTimeMillis() - 14L * 24 * 3600 * 1000))
+            val childrenUri = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+            val victims = mutableListOf<android.net.Uri>()
+            cr.query(childrenUri, arrayOf(
+                android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c ->
+                val iId = c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val iName = c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                while (c.moveToNext()) {
+                    val name = c.getString(iName) ?: continue
+                    val m = Regex("^(\\d{4}-\\d{2}-\\d{2})_session-\\d+\\.txt$").matchEntire(name) ?: continue
+                    if (m.groupValues[1] < cutoff) {
+                        victims.add(android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, c.getString(iId)))
+                    }
+                }
+            }
+            for (u in victims) {
+                try { if (android.provider.DocumentsContract.deleteDocument(cr, u)) n++ } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+        return n
     }
 
     fun transcriptFile(session: Int): java.io.File =

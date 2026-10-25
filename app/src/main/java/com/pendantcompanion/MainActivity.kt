@@ -691,6 +691,11 @@ fun LedCard(vm: PendantViewModel) {
 fun AckCard(vm: PendantViewModel) {
     val ack by vm.ackMode.collectAsState()
     val auto by vm.autoSync.collectAsState()
+    val autoTx by vm.autoTranscribe.collectAsState()
+    val driveFolder by vm.driveFolder.collectAsState()
+    val pickTree = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri -> if (uri != null) vm.setDriveFolder(uri) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -701,6 +706,22 @@ fun AckCard(vm: PendantViewModel) {
                 Text("Auto-sync on connect", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 Switch(checked = auto, onCheckedChange = { vm.setAutoSync(it) })
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Auto-transcribe after sync", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Switch(checked = autoTx, onCheckedChange = { vm.setAutoTranscribe(it) })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Transcripts to Drive", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Button(onClick = { pickTree.launch(null) }) {
+                    Text(if (driveFolder == null) "Pick folder" else "Change folder")
+                }
+            }
+            Text(
+                "Every transcript is copied into that Drive folder as 2026-10-25_session-12.txt, and copies older " +
+                    "than 14 days are deleted automatically, so Drive never accumulates them. Pick a folder inside " +
+                    "your Drive once; the app itself never uses the internet.",
+                style = MaterialTheme.typography.bodySmall,
+            )
             Text(
                 "On (default): as soon as the pendant connects, a read-only sync starts by itself; if new pages were saved, the backup zip is refreshed afterwards. " +
                     "Off: you tap Download flash yourself.",
