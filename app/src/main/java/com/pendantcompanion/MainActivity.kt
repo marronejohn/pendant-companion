@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pendantcompanion.ui.PendantViewModel
 import com.pendantcompanion.ui.PendantViewModel.State.Connected
@@ -124,9 +125,33 @@ fun exportEverythingZip(context: android.content.Context): Int {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { PendantApp() } } }
+        setContent { MaterialTheme(colorScheme = PendantColors) { Surface(Modifier.fillMaxSize()) { PendantApp() } } }
     }
 }
+
+
+/** App palette matched to the launcher icon: deep navy with an orange accent. */
+private val PendantColors = darkColorScheme(
+    primary = Color(0xFFF09A4B),
+    onPrimary = Color(0xFF161A2C),
+    primaryContainer = Color(0xFF3A4066),
+    onPrimaryContainer = Color(0xFFF5E9DC),
+    secondary = Color(0xFF9DB0E8),
+    onSecondary = Color(0xFF161A2C),
+    secondaryContainer = Color(0xFF252A44),
+    onSecondaryContainer = Color(0xFFDDE3F5),
+    tertiary = Color(0xFF9DB0E8),
+    onTertiary = Color(0xFF161A2C),
+    background = Color(0xFF161A2C),
+    onBackground = Color(0xFFE9ECF6),
+    surface = Color(0xFF1D2236),
+    onSurface = Color(0xFFE9ECF6),
+    surfaceVariant = Color(0xFF252A44),
+    onSurfaceVariant = Color(0xFFC3CBE4),
+    outline = Color(0xFF565C7A),
+    error = Color(0xFFEF7D68),
+    onError = Color(0xFF161A2C),
+)
 
 @Composable
 fun PendantApp(vm: PendantViewModel = viewModel()) {
@@ -219,7 +244,7 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Device information (read-only)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("Serial: ${i.serial.ifEmpty { "not reported" }}")
+                Text("Serial: ${i.serial.ifEmpty { "" }}")
                 Text("Firmware: ${i.firmware.ifEmpty { "not reported" }}")
                 Text("Battery: ${i.batteryPercent}%")
                 Text("Flash pages stored: ${i.oldestFlashPage} .. ${i.newestFlashPage}")
@@ -265,6 +290,11 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         ) { uri -> uri?.let { vm.importModel(it) } }
         WhisperCard(vm, onPickModel = { pickModel.launch(arrayOf("*/*")) })
         Spacer(Modifier.height(8.dp))
+        val pickSpeaker = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri -> uri?.let { vm.importSpeakerModel(it) } }
+        SpeakerCard(vm, onPickModel = { pickSpeaker.launch(arrayOf("*/*")) })
+        Spacer(Modifier.height(8.dp))
         SessionsCard(vm)
         Spacer(Modifier.height(8.dp))
         val ctx = LocalContext.current
@@ -298,6 +328,7 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
 fun SessionsCard(vm: PendantViewModel) {
     val sessions by vm.sessions.collectAsState()
     val player by vm.player.collectAsState()
+    val speakerState by vm.speaker.collectAsState()
     val sync by vm.sync.collectAsState()
     val trans by vm.trans.collectAsState()
     val decodeNote by vm.decodeNote.collectAsState()
@@ -397,6 +428,10 @@ fun SessionsCard(vm: PendantViewModel) {
                                        enabled = vm.model.value.path != null &&
                                            trans !is PendantViewModel.TransState.Running) {
                                 Icon(Icons.Filled.GraphicEq, contentDescription = "Transcribe")
+                            }
+                            IconButton({ vm.enrollSession(sess.session) },
+                                       enabled = speakerState.loaded) {
+                                Icon(Icons.Filled.PersonAdd, contentDescription = "Enroll voice")
                             }
                         }
                     }
@@ -505,6 +540,11 @@ fun SearchCard(vm: PendantViewModel) {
                 "Finds words in transcripts. Transcribe a session (the TR icon) first. Everything runs on this phone.",
                 style = MaterialTheme.typography.bodySmall,
             )
+            val onlyYou by vm.searchOnlyYou.collectAsState()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = onlyYou, onCheckedChange = { vm.setSearchOnlyYou(it) })
+                Text("Only my voice (score sessions first)", style = MaterialTheme.typography.bodySmall)
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = query,
@@ -776,6 +816,51 @@ fun StorageCard(vm: PendantViewModel) {
                     },
                 )
             }
+        }
+    }
+}
+
+@Composable
+fun SpeakerCard(vm: PendantViewModel, onPickModel: () -> Unit) {
+    val speaker by vm.speaker.collectAsState()
+    val scores by vm.speakerScores.collectAsState()
+    val note by vm.speakerNote.collectAsState()
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Voiceprint", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            Text(
+                "Tells your voice from background chatter and TV. Everything runs on this phone.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(onPickModel) {
+                Text(if (speaker.loaded) "Voice model loaded (tap to replace)" else "Load voice model (.onnx)")
+            }
+            Text(
+                "Wear the pendant and talk normally for a minute, sync, then tap the person+ icon on that session in Recordings below. One session is enough; more is better.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (speaker.enrolled.isNotEmpty()) {
+                Text("Enrolled from session(s): " + speaker.enrolled.joinToString(", "),
+                     style = MaterialTheme.typography.bodySmall)
+                TextButton({ vm.clearEnrollment() }) { Text("Clear enrollment") }
+            }
+            Text("Match threshold: " + String.format(java.util.Locale.US, "%.2f", speaker.threshold),
+                 style = MaterialTheme.typography.bodySmall)
+            Slider(value = speaker.threshold, onValueChange = { vm.setSpeakerThreshold(it) },
+                   valueRange = 0.5f..0.95f, enabled = speaker.loaded)
+            Button({ vm.scoreSessions() },
+                   enabled = speaker.loaded && speaker.enrolled.isNotEmpty()) {
+                Text("Score all sessions")
+            }
+            if (scores.isNotEmpty()) {
+                Text("Your voice, per session:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                scores.values.sortedByDescending { it.youPct }.forEach { sv ->
+                    Text("Session ${sv.session}: ${sv.youPct}% your voice (${sv.voiced} voiced clips)",
+                         style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            note?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }

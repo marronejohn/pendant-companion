@@ -13,8 +13,8 @@ android {
         applicationId = "com.pendantcompanion"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.13.13"
+        versionCode = 14
+        versionName = "0.13.14"
         ndk { abiFilters += "arm64-v8a" }
     }
     externalNativeBuild {
@@ -51,6 +51,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.protobuf:protobuf-javalite:4.28.3")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
     testImplementation("junit:junit:4.13.2")
 }
 

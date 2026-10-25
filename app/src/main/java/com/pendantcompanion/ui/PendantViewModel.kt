@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import androidx.core.content.ContextCompat
 import com.pendantcompanion.ble.PendantGattClient
 import com.pendantcompanion.TranscribeService
+import com.pendantcompanion.SpeakerVerifier
 import com.pendantcompanion.ble.PendantScanHit
 import com.pendantcompanion.ble.PendantScanner
 import com.pendantcompanion.protocol.FlashPageParser
@@ -107,6 +108,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        refreshSpeakerInfo()
     }
 
     /** One pendant recording session found among the saved flash pages. */
@@ -163,6 +165,268 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     fun setAutoSync(on: Boolean) {
         _autoSync.value = on
         prefs.edit().putBoolean("auto_sync_on_connect", on).apply()
+    }
+
+    // ---- Speaker verification (voiceprint) ----
+    data class SpeakerInfo(
+        val path: String? = null,
+        val loaded: Boolean = false,
+        val enrolled: List<Int> = emptyList(),
+        val threshold: Float = 0.75f,
+    )
+    data class SessionVoice(val session: Int, val youPct: Int, val voiced: Int, val windows: Int)
+
+    private val _speaker = MutableStateFlow(SpeakerInfo(threshold = prefs.getFloat("speaker_threshold", 0.75f)))
+    val speaker: StateFlow<SpeakerInfo> = _speaker
+    private val _speakerScores = MutableStateFlow<Map<Int, SessionVoice>>(emptyMap())
+    val speakerScores: StateFlow<Map<Int, SessionVoice>> = _speakerScores
+    private val _speakerNote = MutableStateFlow<String?>(null)
+    val speakerNote: StateFlow<String?> = _speakerNote
+    private val _searchOnlyYou = MutableStateFlow(prefs.getBoolean("search_only_you", false))
+    val searchOnlyYou: StateFlow<Boolean> = _searchOnlyYou
+    @Volatile private var speakerStop = false
+    private var speakerJob: Job? = null
+    private var speakerVecs = mutableMapOf<Int, FloatArray>()
+    private var speakerCentroid: FloatArray? = null
+    private var lastQuery = ""
+
+    fun setSearchOnlyYou(on: Boolean) {
+        _searchOnlyYou.value = on
+        prefs.edit().putBoolean("search_only_you", on).apply()
+        if (lastQuery.isNotEmpty()) runSearch(lastQuery)
+    }
+
+    private fun speakerDir(): java.io.File =
+        java.io.File(getApplication<Application>().filesDir, "speaker").apply { mkdirs() }
+
+    private fun tagsFile(s: Int): java.io.File =
+        java.io.File(java.io.File(getApplication<Application>().filesDir, "transcripts"), "session_$s.tags.json")
+
+    fun refreshSpeakerInfo() {
+        val saved = prefs.getString("speaker_model_path", null)
+        var loaded = false
+        if (saved != null && java.io.File(saved).length() > 50_000_000L) {
+            loaded = SpeakerVerifier.load(saved)
+            if (!loaded) _speakerNote.value = "The saved voice model did not load; pick the .onnx file again."
+        }
+        speakerVecs = mutableMapOf()
+        prefs.getString("speaker_enrolled", null)?.split(",")?.mapNotNull { it.toIntOrNull() }?.forEach { id ->
+            readFloats(java.io.File(speakerDir(), "vec_$id.bin"))?.let { speakerVecs[id] = it }
+        }
+        speakerCentroid = readFloats(java.io.File(speakerDir(), "enroll.bin"))
+        _speaker.value = SpeakerInfo(saved, loaded, speakerVecs.keys.sorted(), _speaker.value.threshold)
+        if (loaded && speakerVecs.isNotEmpty() && speakerCentroid == null) recomputeCentroid()
+    }
+
+    private fun readFloats(f: java.io.File): FloatArray? = try {
+        if (f.exists()) {
+            val a = FloatArray(192)
+            java.nio.ByteBuffer.wrap(f.readBytes()).order(java.nio.ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(a)
+            a
+        } else null
+    } catch (e: Exception) { null }
+
+    private fun writeFloats(f: java.io.File, v: FloatArray) {
+        val bb = java.nio.ByteBuffer.allocate(v.size * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        bb.asFloatBuffer().put(v)
+        f.writeBytes(bb.array())
+    }
+
+    /** Copies a user-picked ECAPA .onnx into app storage and loads it. */
+    fun importSpeakerModel(uri: android.net.Uri) {
+        if (speakerJob?.isActive == true) return
+        speakerJob = scope.launch(Dispatchers.IO) {
+            try {
+                val dst = java.io.File(speakerDir(), "ecapa.onnx")
+                val src = getApplication<Application>().contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected file")
+                src.use { ins -> dst.outputStream().use { ins.copyTo(it) } }
+                if (dst.length() < 50_000_000L) {
+                    dst.delete()
+                    throw IllegalStateException("That file is too small to be the voice model (${dst.length()} bytes)")
+                }
+                if (!SpeakerVerifier.load(dst.absolutePath)) {
+                    dst.delete()
+                    throw IllegalStateException("ONNX Runtime could not load that file; is it ecapa-any-length.onnx?")
+                }
+                prefs.edit().putString("speaker_model_path", dst.absolutePath).apply()
+                _speaker.value = _speaker.value.copy(path = dst.absolutePath, loaded = true)
+                _speakerNote.value = "Voice model loaded."
+            } catch (e: Exception) {
+                _speakerNote.value = "Voice model import failed: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
+    /** Mean voiceprint over 3 s clips (1.5 s hop) with enough energy, or null. */
+    private fun embedWindows(samples: FloatArray, maxWindows: Int = 120): FloatArray? {
+        val w = 48000; val hop = 24000
+        val idx = mutableListOf<Int>()
+        var st = 0
+        while (st + w <= samples.size) {
+            var sum = 0.0
+            for (k in st until st + w step 4) { val g = samples[st + k]; sum += g * g }
+            if (sum / (w / 4) > 0.005 * 0.005) idx.add(st)
+            st += hop
+        }
+        if (idx.size > maxWindows) {
+            val stride = idx.size / maxWindows
+            val keep = mutableListOf<Int>()
+            var i = 0
+            while (i < idx.size) { keep.add(idx[i]); i += stride }
+            idx.clear(); idx.addAll(keep)
+        }
+        if (idx.size < 3) return null
+        val acc = FloatArray(192)
+        var n = 0
+        for (start in idx) {
+            val v = SpeakerVerifier.embed(samples.copyOfRange(start, start + w)) ?: continue
+            for (i in 0 until 192) acc[i] += v[i]
+            n++
+        }
+        if (n < 3) return null
+        var norm = 0f
+        for (g in acc) norm += g * g
+        norm = kotlin.math.sqrt(norm) + 1e-9f
+        for (i in 0 until 192) acc[i] /= norm
+        return acc
+    }
+
+    private fun recomputeCentroid() {
+        if (speakerVecs.isEmpty()) { speakerCentroid = null; return }
+        val acc = FloatArray(192)
+        for (v in speakerVecs.values) for (i in 0 until 192) acc[i] += v[i]
+        var norm = 0f
+        for (g in acc) norm += g * g
+        norm = kotlin.math.sqrt(norm) + 1e-9f
+        for (i in 0 until 192) acc[i] /= norm
+        speakerCentroid = acc
+        writeFloats(java.io.File(speakerDir(), "enroll.bin"), acc)
+    }
+
+    fun clearEnrollment() {
+        speakerJob?.cancel()
+        speakerStop = true
+        speakerVecs.clear()
+        speakerCentroid = null
+        speakerDir().listFiles()?.forEach { if (it.name.startsWith("vec_") || it.name == "enroll.bin") it.delete() }
+        prefs.edit().putString("speaker_enrolled", null).apply()
+        _speakerScores.value = emptyMap()
+        _speaker.value = _speaker.value.copy(enrolled = emptyList())
+        _speakerNote.value = "Enrollment cleared."
+    }
+
+    fun setSpeakerThreshold(v: Float) {
+        val t = v.coerceIn(0.5f, 0.95f)
+        _speaker.value = _speaker.value.copy(threshold = t)
+        prefs.edit().putFloat("speaker_threshold", t).apply()
+    }
+
+    /** Decode the session WAV once if it is not on the phone yet. */
+    private fun ensureSessionWav(s: Int): java.io.File? {
+        val out = wavFileFor(s)
+        if (out.exists() && out.length() > 44L) return out
+        val packets = collectPackets(s)
+        if (packets.isEmpty()) return null
+        OpusDecoder.decodeToWav(packets, out)
+        return out
+    }
+
+    fun enrollSession(s: Int) {
+        if (!_speaker.value.loaded) { _speakerNote.value = "Load the voice model file first."; return }
+        if (speakerJob?.isActive == true) return
+        speakerStop = false
+        speakerJob = scope.launch(Dispatchers.IO) {
+            try {
+                _speakerNote.value = "Decoding session $s…"
+                val wav = ensureSessionWav(s) ?: run {
+                    _speakerNote.value = "No audio found for session $s."; return@launch }
+                _speakerNote.value = "Reading the voiceprint from session $s…"
+                val samples = wavToSamples(wav)
+                val v = embedWindows(samples) ?: run {
+                    _speakerNote.value = "Not enough speech in session $s to enroll; try one where you talk for a minute."; return@launch }
+                speakerVecs[s] = v
+                writeFloats(java.io.File(speakerDir(), "vec_$s.bin"), v)
+                recomputeCentroid()
+                prefs.edit().putString("speaker_enrolled", speakerVecs.keys.sorted().joinToString(",")).apply()
+                _speaker.value = _speaker.value.copy(enrolled = speakerVecs.keys.sorted())
+                _speakerNote.value = "Enrolled session $s. One is enough; more sessions make the voiceprint surer."
+            } catch (e: Exception) {
+                _speakerNote.value = "Enroll failed: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
+    fun scoreSessions() {
+        if (!_speaker.value.loaded) { _speakerNote.value = "Load the voice model file first."; return }
+        if (speakerVecs.isEmpty()) { _speakerNote.value = "Enroll a session of your voice first."; return }
+        if (speakerJob?.isActive == true) return
+        val c = speakerCentroid ?: return
+        val thr = _speaker.value.threshold
+        speakerStop = false
+        speakerJob = scope.launch(Dispatchers.IO) {
+            try {
+                val list = _sessions.value
+                if (list.isEmpty()) { _speakerNote.value = "No sessions on the phone yet; sync first."; return@launch }
+                val res = mutableMapOf<Int, SessionVoice>()
+                var i = 0
+                for (si in list) {
+                    if (speakerStop) return@launch
+                    i++
+                    _speakerNote.value = "Scoring session ${si.session} ($i of ${list.size})…"
+                    try {
+                        val wav = ensureSessionWav(si.session) ?: continue
+                        val samples = wavToSamples(wav)
+                        val w = 48000; val hop = 24000
+                        val starts = mutableListOf<Int>(); val scores = mutableListOf<Float>()
+                        var st = 0
+                        while (st + w <= samples.size) {
+                            var sum = 0.0
+                            for (k in st until st + w step 4) { val g = samples[st + k]; sum += g * g }
+                            if (sum / (w / 4) > 0.005 * 0.005) {
+                                val v = SpeakerVerifier.embed(samples.copyOfRange(st, st + w))
+                                if (v != null) { starts.add(st / 16000); scores.add(SpeakerVerifier.cosine(v, c)) }
+                            }
+                            st += hop
+                        }
+                        if (scores.isEmpty()) continue
+                        val you = scores.count { it >= thr }
+                        res[si.session] = SessionVoice(si.session, you * 100 / scores.size, scores.size, scores.size)
+                        val sb = StringBuilder()
+                        sb.append("{\"win\":3.0,\"hop\":1.5,\"thr\":").append(thr).append(",\"w\":[")
+                        starts.indices.forEach { j ->
+                            if (j > 0) sb.append(",")
+                            sb.append("[").append(starts[j]).append(",").append(scores[j]).append("]")
+                        }
+                        sb.append("]}")
+                        tagsFile(si.session).writeText(sb.toString())
+                    } catch (e: Exception) { /* skip this session */ }
+                }
+                _speakerScores.value = res
+                _speakerNote.value = "Scored ${res.size} sessions against your voiceprint."
+            } catch (e: Exception) {
+                _speakerNote.value = "Scoring failed: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
+    /** True when the transcript line at sec seconds scores as your voice. Sessions never scored stay in. */
+    fun lineIsYou(session: Int, sec: Double): Boolean {
+        val f = tagsFile(session)
+        if (!f.exists()) return true
+        return try {
+            val o = org.json.JSONObject(f.readText())
+            val arr = o.getJSONArray("w")
+            val thr = o.getDouble("thr")
+            val win = o.getDouble("win")
+            var best = -1.0
+            for (j in 0 until arr.length()) {
+                val pa = arr.getJSONArray(j)
+                val st = pa.getDouble(0)
+                if (sec >= st && sec < st + win) best = maxOf(best, pa.getDouble(1))
+            }
+            best < 0 || best >= thr
+        } catch (e: Exception) { true }
     }
 
     private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList())
@@ -1253,11 +1517,13 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     fun runSearch(raw: String) {
         val query = raw.trim()
         if (query.isEmpty()) { _search.value = SearchState("", emptyList(), false); return }
+        lastQuery = query
         if (searchJob?.isActive == true) return
         searchJob = scope.launch(Dispatchers.IO) {
             try {
                 val dir = java.io.File(getApplication<Application>().filesDir, "transcripts")
                 val hits = mutableListOf<SearchHit>()
+                val onlyYou = _searchOnlyYou.value
                 dir.listFiles()?.sortedBy { it.name }?.forEach { f ->
                     val m = Regex("session_(\\d+)\\.txt").matchEntire(f.name) ?: return@forEach
                     val sess = m.groupValues[1].toInt()
@@ -1265,6 +1531,13 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     var stamp = ""
                     for (line in f.readLines()) {
                         if (line.contains(query, ignoreCase = true)) {
+                            if (onlyYou) {
+                                val sm = Regex("\\[(\\d+):(\\d+)\\]").find(line)
+                                if (sm != null) {
+                                    val sec = sm.groupValues[1].toInt() * 60 + sm.groupValues[2].toInt()
+                                    if (!lineIsYou(sess, sec.toDouble())) continue
+                                }
+                            }
                             if (matches.isEmpty()) {
                                 stamp = Regex("\\[[^]]+\\]").find(line)?.value ?: ""
                             }
