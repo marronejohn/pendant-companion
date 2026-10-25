@@ -31,6 +31,13 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+    packaging {
+        jniLibs {
+            // compress native libs in the APK so the whole APK stays under 20 MB for Drive delivery
+            useLegacyPackaging = true
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
