@@ -191,6 +191,20 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refreshSpeakerInfo()
+        scope.launch(Dispatchers.IO) {
+            try {
+                val f = sessionsIndexFile()
+                if (f.exists() && _sessions.value.isEmpty()) {
+                    val arr = org.json.JSONArray(f.readText())
+                    val list = (0 until arr.length()).map { i ->
+                        val o = arr.getJSONObject(i)
+                        SessionInfo(o.getInt("session"), o.getInt("pages"), o.getLong("frames"),
+                            o.getLong("durationSec"), o.optLong("startMs"))
+                    }.sortedBy { it.session }
+                    if (list.isNotEmpty()) _sessions.value = list
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     fun setSearchOnlyYou(on: Boolean) {
@@ -800,6 +814,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Saved recordings list, so it survives app restarts instead of emptying until the next sync. */
+    private fun sessionsIndexFile(): java.io.File =
+        java.io.File(getApplication<Application>().filesDir, "sessions_index.json")
+
     private fun flashPagesDir(): java.io.File =
         java.io.File(getApplication<Application>().filesDir, "flash_pages")
 
@@ -838,6 +856,16 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     SessionInfo(sess, pf[0].toInt(), pf[1], pf[1] * 20 / 1000, startMs)
                 }.sortedBy { it.session }
                 _sessions.value = list
+                try {
+                    val arr = org.json.JSONArray()
+                    list.forEach { s ->
+                        arr.put(org.json.JSONObject()
+                            .put("session", s.session).put("pages", s.pages)
+                            .put("frames", s.frames).put("durationSec", s.durationSec)
+                            .put("startMs", s.startMs))
+                    }
+                    sessionsIndexFile().writeText(arr.toString())
+                } catch (_: Exception) {}
             } catch (e: Exception) {
                 _player.value = PlayerState.PlayerError("Could not list recordings: ${e.message}")
             }
@@ -1384,6 +1412,16 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     fun transcribeAllSessions() {
         if (BatchRunner.job?.isActive == true) return
         val app = getApplication<Application>()
+        // No previous batch running but a stale progress line left over? Clear it.
+        if (BatchRunner.state.value != null) BatchRunner.state.value = null
+        // The recordings list lives in memory until a sync fills it. Refuse to
+        // start a batch (and its foreground service) against an empty list:
+        // that used to park the notification at "0 of 0 (starting batch...)".
+        if (_sessions.value.none { it.frames > 0 }) {
+            _trans.value = TransState.TransError(-1,
+                "Nothing to transcribe yet: the recordings list is empty. Connect and sync the pendant first, then run the batch again.")
+            return
+        }
         BatchRunner.state.value = BatchProgress(0, 0, -1, 0, "starting batch...")
         BatchRunner.job = BatchRunner.scope.launch {
             try { TranscribeService.start(app) } catch (_: Exception) {}
@@ -1396,6 +1434,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             val mf = modelFile()
             if (!mf.exists() || mf.length() < 10_000_000) {
                 _trans.value = TransState.TransError(-1, "No Whisper model loaded. Tap Load model file first.")
+                try { TranscribeService.stop(getApplication()) } catch (_: Exception) {}
                 return
             }
             val cores = Runtime.getRuntime().availableProcessors()
@@ -1405,7 +1444,13 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             val workers = if (mf.length() > 50_000_000) 2 else 3
             val perWorker = maxOf(2, cores / workers)
             val targets = _sessions.value.filter { it.frames > 0 }.sortedBy { it.session }
-            if (targets.isEmpty()) return
+            if (targets.isEmpty()) {
+                _trans.value = TransState.TransError(-1,
+                    "Nothing to transcribe yet: the recordings list is empty. Sync the pendant first.")
+                BatchRunner.state.value = null
+                try { TranscribeService.stop(getApplication()) } catch (_: Exception) {}
+                return
+            }
             val total = targets.size
             val done = java.util.concurrent.atomic.AtomicInteger(0)
             val failed = java.util.concurrent.atomic.AtomicInteger(0)
