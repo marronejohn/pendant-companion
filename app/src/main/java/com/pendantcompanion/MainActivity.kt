@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -414,7 +415,7 @@ fun SessionsCard(vm: PendantViewModel) {
                             (player as PendantViewModel.PlayerState.Playing).session == sess.session
                         Row(Modifier.fillMaxWidth().padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
+                            Column(Modifier.widthIn(min = 140.dp, max = 240.dp)) {
                                 Text("Session ${sess.session}", style = MaterialTheme.typography.bodyLarge)
                                 Text(
                                     "${sess.pages} pages · ~${sess.durationSec / 60}m ${sess.durationSec % 60}s · " +
@@ -424,7 +425,17 @@ fun SessionsCard(vm: PendantViewModel) {
                                         else "date not recorded"),
                                     style = MaterialTheme.typography.bodySmall,
                                 )
-                                
+                                val preview = remember(sess.session) { vm.transcriptPreview(sess.session) }
+                                if (!preview.isNullOrEmpty()) {
+                                    Text(
+                                        preview,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontStyle = FontStyle.Italic,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                             val hasTranscript = vm.transcriptFile(sess.session).exists()
                             val paused = player is PendantViewModel.PlayerState.Paused &&

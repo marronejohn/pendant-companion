@@ -1552,7 +1552,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _trans.value = TransState.Running(session, "transcribing")
                 val samples = wavToSamples(wav)
                 transCancel.set(false)
-                val text = transcribeChunked(h, samples, minOf(Runtime.getRuntime().availableProcessors(), 6)) { note, _ ->
+                val text = transcribeChunked(h, samples, Runtime.getRuntime().availableProcessors()) { note, _ ->
                     _trans.value = TransState.Running(session, note)
                 }
                 if (text.isBlank()) {
@@ -1783,6 +1783,12 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     /** Full transcript text for the in-app viewer, or null when none is saved. */
     fun transcriptText(session: Int): String? =
         transcriptFile(session).takeIf { it.exists() }?.readText()
+
+    /** Short opening snippet of a session's transcript for the recordings list. */
+    fun transcriptPreview(session: Int, chars: Int = 220): String? =
+        transcriptFile(session).takeIf { it.exists() }
+            ?.readText()?.trim()
+            ?.take(chars)?.let { if (it.length == chars) it.trimEnd() + "\u2026" else it }
 
     /** Import transcript text files picked with the SAF picker. File names
      *  must carry the session number, e.g. session-14.txt or transcript-14.txt. */
