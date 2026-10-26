@@ -413,9 +413,8 @@ fun SessionsCard(vm: PendantViewModel) {
                     items(sessions) { sess ->
                         val playing = player is PendantViewModel.PlayerState.Playing &&
                             (player as PendantViewModel.PlayerState.Playing).session == sess.session
-                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.widthIn(min = 140.dp, max = 240.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Column {
                                 Text("Session ${sess.session}", style = MaterialTheme.typography.bodyLarge)
                                 Text(
                                     "${sess.pages} pages · ~${sess.durationSec / 60}m ${sess.durationSec % 60}s · " +
@@ -425,23 +424,13 @@ fun SessionsCard(vm: PendantViewModel) {
                                         else "date not recorded"),
                                     style = MaterialTheme.typography.bodySmall,
                                 )
-                                val preview = remember(sess.session) { vm.transcriptPreview(sess.session) }
-                                if (!preview.isNullOrEmpty()) {
-                                    Text(
-                                        preview,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontStyle = FontStyle.Italic,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
                             }
                             val hasTranscript = vm.transcriptFile(sess.session).exists()
                             val paused = player is PendantViewModel.PlayerState.Paused &&
                                 (player as PendantViewModel.PlayerState.Paused).session == sess.session
                             Row(verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                                modifier = Modifier.padding(top = 2.dp)
+                                    .horizontalScroll(rememberScrollState())) {
                                 IconButton(modifier = Modifier.size(36.dp), onClick = { vm.playSession(sess.session) },
                                            enabled = player !is PendantViewModel.PlayerState.Decoding) {
                                     Icon(
@@ -488,6 +477,18 @@ fun SessionsCard(vm: PendantViewModel) {
                                 IconButton(modifier = Modifier.size(36.dp), onClick = { pendingDelete = sess }) {
                                     Icon(Icons.Filled.Delete, contentDescription = "Delete session")
                                 }
+                            }
+                            val preview = remember(sess.session) { vm.transcriptPreview(sess.session) }
+                            if (!preview.isNullOrEmpty()) {
+                                Text(
+                                    preview,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontStyle = FontStyle.Italic,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = 2.dp),
+                                )
                             }
                         }
                     }
