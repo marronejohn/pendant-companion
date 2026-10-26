@@ -333,6 +333,7 @@ fun SessionsCard(vm: PendantViewModel) {
     val sync by vm.sync.collectAsState()
     val trans by vm.trans.collectAsState()
     val decodeNote by vm.decodeNote.collectAsState()
+    val cleaning by vm.cleaning.collectAsState()
     LaunchedEffect(Unit) { vm.refreshSessions() }
     LaunchedEffect((sync as? PendantViewModel.SyncProgress)?.finished) {
         if ((sync as? PendantViewModel.SyncProgress)?.finished == true) vm.refreshSessions()
@@ -379,6 +380,21 @@ fun SessionsCard(vm: PendantViewModel) {
                         text = { Text("This removes the session, its audio and its transcript from the phone. With acknowledge-after-sync on, the pendant has already erased its copy, so this cannot be undone.") },
                         confirmButton = { TextButton(onClick = { pendingDelete = null; vm.deleteSession(del.session) }) { Text("Delete") } },
                         dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
+                    )
+                }
+                var confirmingClean by remember { mutableStateOf(false) }
+                Button(onClick = { confirmingClean = true },
+                       enabled = trans !is PendantViewModel.TransState.Running && !cleaning &&
+                                 player !is PendantViewModel.PlayerState.Decoding) {
+                    Text(if (cleaning) "Scanning recordings..." else "Delete empty recordings")
+                }
+                if (confirmingClean) {
+                    AlertDialog(
+                        onDismissRequest = { confirmingClean = false },
+                        title = { Text("Delete empty recordings?") },
+                        text = { Text("Scans every recording (decoding where needed) and removes the ones with no speech-like audio at all. Anything with voice, or with real transcript text, is always kept. Removed sessions are gone for good.") },
+                        confirmButton = { TextButton(onClick = { confirmingClean = false; vm.cleanEmptySessions() }) { Text("Scan and delete") } },
+                        dismissButton = { TextButton(onClick = { confirmingClean = false }) { Text("Cancel") } },
                     )
                 }
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {

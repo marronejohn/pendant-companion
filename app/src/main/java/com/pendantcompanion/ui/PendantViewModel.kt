@@ -178,6 +178,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private val _speaker = MutableStateFlow(SpeakerInfo(threshold = prefs.getFloat("speaker_threshold", 0.75f)))
     val speaker: StateFlow<SpeakerInfo> = _speaker
     private val _speakerScores = MutableStateFlow<Map<Int, SessionVoice>>(emptyMap())
+    private val _cleaning = MutableStateFlow(false)
+    val cleaning: StateFlow<Boolean> = _cleaning
     val speakerScores: StateFlow<Map<Int, SessionVoice>> = _speakerScores
     private val _speakerNote = MutableStateFlow<String?>(null)
     val speakerNote: StateFlow<String?> = _speakerNote
@@ -902,6 +904,119 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _speakerNote.value = "Could not delete session $s: ${e.message}"
             }
         }
+    }
+
+    /** Scan every recording and delete sessions with no speech-like audio at all. */
+    fun cleanEmptySessions() {
+        if (_cleaning.value || _sessions.value.isEmpty()) return
+        _cleaning.value = true
+        scope.launch(Dispatchers.IO) {
+            var removed = 0
+            var kept = 0
+            val removedIds = mutableListOf<Int>()
+            try {
+                val cur = _player.value
+                val curSess = when (cur) {
+                    is PlayerState.Playing -> cur.session
+                    is PlayerState.Paused -> cur.session
+                    else -> -1
+                }
+                val list = _sessions.value
+                _decodeNote.value = "Scanning ${list.size} recordings for empty sessions..."
+                val ctx = kotlinx.coroutines.currentCoroutineContext()
+                for (s in list) {
+                    if (!ctx.isActive) break
+                    if (s.session == curSess) { kept++; continue }
+                    try {
+                        val wav = wavFileFor(s.session)
+                        if (!wav.exists() || wav.length() <= 44L) {
+                            val packets = collectPackets(s.session)
+                            if (packets.isEmpty()) {
+                                removeSessionFiles(s.session); removed++; removedIds.add(s.session)
+                                continue
+                            }
+                            OpusDecoder.decodeToWav(packets, wav, keepGoing = { ctx.isActive })
+                        }
+                        val voiced = voicedWindows(wav)
+                        if (voiced == 0 && !hasRealTranscript(s.session)) {
+                            removeSessionFiles(s.session)
+                            removed++; removedIds.add(s.session)
+                        } else kept++
+                    } catch (_: Exception) { kept++ }
+                }
+                recomputeCentroid()
+                val enrolled = speakerVecs.keys.sorted()
+                prefs.edit()
+                    .putString("speaker_enrolled", if (enrolled.isEmpty()) null else enrolled.joinToString(","))
+                    .apply()
+                _speaker.value = _speaker.value.copy(enrolled = enrolled)
+                removedIds.forEach { id -> _speakerScores.value = _speakerScores.value - id }
+                refreshSessions()
+                _decodeNote.value = when {
+                    removed == 0 -> "No empty recordings found: all $kept sessions carry speech."
+                    else -> "Removed $removed empty recording${if (removed == 1) "" else "s"}; kept $kept with speech."
+                }
+            } catch (e: Exception) {
+                _decodeNote.value = "Empty-recording scan failed: ${e.message}"
+            } finally {
+                _cleaning.value = false
+            }
+        }
+    }
+
+    private fun removeSessionFiles(s: Int) {
+        flashPagesDir().listFiles()?.forEach { f ->
+            if (f.name.endsWith("_session$s.bin")) f.delete()
+        }
+        wavFileFor(s).delete()
+        transcriptFile(s).delete()
+        tagsFile(s).delete()
+        java.io.File(speakerDir(), "vec_$s.bin").delete()
+        speakerVecs.remove(s)
+    }
+
+    /** True when a session's transcript has real words, not just silence markers. */
+    private fun hasRealTranscript(s: Int): Boolean {
+        val txt = transcriptFile(s)
+        if (!txt.exists()) return false
+        return try {
+            txt.readText()
+                .replace("[BLANK_AUDIO]", "").replace("[Silence]", "")
+                .replace("[inaudible]", "").replace("[music]", "").trim()
+                .isNotEmpty()
+        } catch (_: Exception) { true }
+    }
+
+    /** Counts 1-second loudness blocks above the speech floor (RMS > 0.02) in a 16-bit mono WAV. */
+    private fun voicedWindows(wav: java.io.File): Int {
+        if (!wav.exists() || wav.length() <= 44L) return 0
+        var voiced = 0
+        val buf = ByteArray(96000)
+        try {
+            java.io.BufferedInputStream(java.io.FileInputStream(wav), 1 shl 16).use { ins ->
+                ins.skip(44L)
+                while (true) {
+                    var off = 0
+                    while (off < buf.size) {
+                        val n = ins.read(buf, off, buf.size - off)
+                        if (n < 0) break
+                        off += n
+                    }
+                    if (off == 0) break
+                    var sum = 0.0
+                    var i = 0
+                    while (i + 1 < off) {
+                        val v = (((buf[i].toInt() and 0xFF) or (buf[i + 1].toInt() shl 8)).toShort()).toDouble() / 32768.0
+                        sum += v * v
+                        i += 2
+                    }
+                    val rms = kotlin.math.sqrt(sum / (off / 2))
+                    if (rms > 0.02) voiced++
+                    if (off < buf.size) break
+                }
+            }
+        } catch (_: Exception) { return -1 }
+        return voiced
     }
 
     private fun collectPackets(session: Int): List<ByteArray> {
