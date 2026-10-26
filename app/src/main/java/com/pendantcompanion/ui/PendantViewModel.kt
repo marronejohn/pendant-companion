@@ -1050,7 +1050,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 if (!out.exists() || out.length() <= 44L) {
                     val packets = collectPackets(session)
                     if (packets.isEmpty()) {
-                        _player.value = PlayerState.PlayerError("No audio frames found for session $session")
+                        _player.value = PlayerState.PlayerError(noAudioDiagnosis(session))
                         return@launch
                     }
                     var skipped = 0
@@ -1096,7 +1096,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 if (!out.exists() || out.length() <= 44L) {
                     val packets = collectPackets(session)
                     if (packets.isEmpty()) {
-                        _player.value = PlayerState.PlayerError("No audio frames found for session $session")
+                        _player.value = PlayerState.PlayerError(noAudioDiagnosis(session))
                         return@launch
                     }
                     var skipped = 0
@@ -1521,7 +1521,9 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _trans.value = TransState.Running(session, "loading Whisper model")
                 h = WhisperBridge.nativeInit(mf.absolutePath)
                 if (h == 0L) {
-                    throw IllegalStateException("Whisper failed to load the model file")
+                    throw IllegalStateException(
+                        "Whisper failed to load the model file (${mf.length() / 1_000_000} MB). " +
+                            "Tap Load model file and pick it again; if it keeps failing, the copy on the phone may be damaged, so re-download it.")
                 }
                 _model.value = _model.value.copy(ready = true)
                 _trans.value = TransState.Running(session, "transcribing")
@@ -1935,11 +1937,30 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Plain-language diagnosis when a session has no decodable audio on the phone. */
+    private fun noAudioDiagnosis(session: Int): String {
+        val dir = flashPagesDir().listFiles() ?: emptyArray<java.io.File>()
+        val mine = dir.filter { it.name.endsWith("_session$session.bin") }
+        val frames = mine.sumOf { FlashPageParser.extractOpusFrames(it.readBytes()).size }
+        val wav = wavFileFor(session)
+        val where = when {
+            mine.isEmpty() ->
+                "no audio pages for this session reached the phone (storage holds ${dir.size} page files for other sessions)"
+            frames == 0 ->
+                "${mine.size} audio page${if (mine.size == 1) "" else "s"} stored for this session hold 0 usable frames, so their audio did not survive"
+            else ->
+                "${mine.size} pages hold $frames frames but none decoded"
+        }
+        val cache = if (!wav.exists()) "no cached audio copy"
+            else "a ${wav.length()}-byte cached audio copy that is too small to use"
+        return "No audio frames found for session $session: $where; $cache."
+    }
+
     private suspend fun decodeSessionWav(session: Int): java.io.File {
         val out = wavFileFor(session)
         if (out.exists() && out.length() > 44L) return out
         val packets = collectPackets(session)
-        if (packets.isEmpty()) throw IllegalStateException("No audio frames found for session $session")
+        if (packets.isEmpty()) throw IllegalStateException(noAudioDiagnosis(session))
         val jobCtx = kotlinx.coroutines.currentCoroutineContext()
         OpusDecoder.decodeToWav(packets, out, { jobCtx.isActive }, { _, _ -> })
         return out
