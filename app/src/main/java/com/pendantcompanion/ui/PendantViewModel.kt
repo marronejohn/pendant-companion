@@ -282,7 +282,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         var st = 0
         while (st + w <= samples.size) {
             var sum = 0.0
-            for (k in st until st + w step 4) { val g = samples[st + k]; sum += g * g }
+            for (k in st until st + w step 4) { val g = samples[k]; sum += g * g }
             if (sum / (w / 4) > 0.005 * 0.005) idx.add(st)
             st += hop
         }
@@ -399,7 +399,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         var st = 0
                         while (st + w <= samples.size) {
                             var sum = 0.0
-                            for (k in st until st + w step 4) { val g = samples[st + k]; sum += g * g }
+                            for (k in st until st + w step 4) { val g = samples[k]; sum += g * g }
                             if (sum / (w / 4) > 0.005 * 0.005) {
                                 val v = SpeakerVerifier.embed(samples.copyOfRange(st, st + w))
                                 if (v != null) { starts.add(st / 16000); scores.add(SpeakerVerifier.cosine(v, c)) }
