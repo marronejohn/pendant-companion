@@ -401,30 +401,26 @@ fun SessionsCard(vm: PendantViewModel) {
                     items(sessions) { sess ->
                         val playing = player is PendantViewModel.PlayerState.Playing &&
                             (player as PendantViewModel.PlayerState.Playing).session == sess.session
-                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("Session ${sess.session}", style = MaterialTheme.typography.bodyLarge)
                                 Text(
-                                    "${sess.pages} pages · ${sess.frames} frames · " +
-                                        "~${sess.durationSec / 60}m ${sess.durationSec % 60}s",
+                                    "${sess.pages} pages · ~${sess.durationSec / 60}m ${sess.durationSec % 60}s · " +
+                                        (if (sess.startMs > 0)
+                                            java.text.SimpleDateFormat("d MMM, h:mm a", java.util.Locale.getDefault())
+                                                .format(java.util.Date(sess.startMs))
+                                        else "date not recorded"),
                                     style = MaterialTheme.typography.bodySmall,
                                 )
-                                Text(
-                                    if (sess.startMs > 0)
-                                        java.text.SimpleDateFormat(
-                                            "d MMM yyyy, h:mm a", java.util.Locale.getDefault(),
-                                        ).format(java.util.Date(sess.startMs))
-                                    else "date not recorded (older firmware)",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
+                                
                             }
                             val hasTranscript = vm.transcriptFile(sess.session).exists()
                             val paused = player is PendantViewModel.PlayerState.Paused &&
                                 (player as PendantViewModel.PlayerState.Paused).session == sess.session
                             Row(verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                                IconButton({ vm.playSession(sess.session) },
+                                IconButton(modifier = Modifier.size(36.dp), onClick = { vm.playSession(sess.session) },
                                            enabled = player !is PendantViewModel.PlayerState.Decoding) {
                                     Icon(
                                         when {
@@ -439,31 +435,31 @@ fun SessionsCard(vm: PendantViewModel) {
                                         })
                                 }
                                 if (paused) {
-                                    IconButton({ vm.stopPlayback() }) {
+                                    IconButton(modifier = Modifier.size(36.dp), onClick = { vm.stopPlayback() }) {
                                         Icon(Icons.Filled.Stop, contentDescription = "Stop")
                                     }
                                 }
-                                IconButton({ vm.exportSession(sess.session) },
+                                IconButton(modifier = Modifier.size(36.dp), onClick = { vm.exportSession(sess.session) },
                                            enabled = player !is PendantViewModel.PlayerState.Decoding) {
                                     Icon(Icons.Filled.Save, contentDescription = "Export WAV")
                                 }
-                                IconButton({ vm.exportSessionAudioAndTranscript(sess.session) },
+                                IconButton(modifier = Modifier.size(36.dp), onClick = { vm.exportSessionAudioAndTranscript(sess.session) },
                                            enabled = player !is PendantViewModel.PlayerState.Decoding) {
                                     Icon(Icons.Filled.Share, contentDescription = "Export audio + transcript")
                                 }
-                                IconButton({ vm.shareTranscript(sess.session) }, enabled = hasTranscript) {
+                                IconButton(modifier = Modifier.size(36.dp), onClick = { vm.shareTranscript(sess.session) }, enabled = hasTranscript) {
                                     Icon(Icons.Filled.Description, contentDescription = "Share transcript")
                                 }
-                                IconButton({ vm.transcribeSession(sess.session) },
+                                IconButton(modifier = Modifier.size(36.dp), onClick = { vm.transcribeSession(sess.session) },
                                            enabled = vm.model.value.path != null &&
                                                trans !is PendantViewModel.TransState.Running) {
                                     Icon(Icons.Filled.GraphicEq, contentDescription = "Transcribe")
                                 }
-                                IconButton({ vm.enrollSession(sess.session) },
+                                IconButton(modifier = Modifier.size(36.dp), onClick = { vm.enrollSession(sess.session) },
                                            enabled = speakerState.loaded) {
                                     Icon(Icons.Filled.PersonAdd, contentDescription = "Enroll voice")
                                 }
-                                IconButton({ pendingDelete = sess }) {
+                                IconButton(modifier = Modifier.size(36.dp), onClick = { pendingDelete = sess }) {
                                     Icon(Icons.Filled.Delete, contentDescription = "Delete session")
                                 }
                             }
