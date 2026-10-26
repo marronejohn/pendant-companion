@@ -872,6 +872,38 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Delete one recording: its saved flash pages plus every derived file. */
+    fun deleteSession(s: Int) {
+        val cur = _player.value
+        if ((cur is PlayerState.Playing && cur.session == s) ||
+            (cur is PlayerState.Paused && cur.session == s)) {
+            scope.launch(Dispatchers.Main) { stopPlayback() }
+        }
+        scope.launch(Dispatchers.IO) {
+            try {
+                flashPagesDir().listFiles()?.forEach { f ->
+                    if (f.name.endsWith("_session$s.bin")) f.delete()
+                }
+                wavFileFor(s).delete()
+                transcriptFile(s).delete()
+                tagsFile(s).delete()
+                java.io.File(speakerDir(), "vec_$s.bin").delete()
+                speakerVecs.remove(s)
+                recomputeCentroid()
+                val enrolled = speakerVecs.keys.sorted()
+                prefs.edit()
+                    .putString("speaker_enrolled", if (enrolled.isEmpty()) null else enrolled.joinToString(","))
+                    .apply()
+                _speaker.value = _speaker.value.copy(enrolled = enrolled)
+                _speakerScores.value = _speakerScores.value - s
+                refreshSessions()
+                _speakerNote.value = "Deleted session $s."
+            } catch (e: Exception) {
+                _speakerNote.value = "Could not delete session $s: ${e.message}"
+            }
+        }
+    }
+
     private fun collectPackets(session: Int): List<ByteArray> {
         val out = mutableListOf<ByteArray>()
         flashPagesDir().listFiles()

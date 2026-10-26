@@ -29,6 +29,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
@@ -346,6 +347,7 @@ fun SessionsCard(vm: PendantViewModel) {
             } else {
                 Text("${sessions.size} recording sessions",
                      style = MaterialTheme.typography.bodySmall)
+                var pendingDelete by remember { mutableStateOf<PendantViewModel.SessionInfo?>(null) }
                 val pickTranscripts = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenMultipleDocuments()
                 ) { uris -> if (uris.isNotEmpty()) vm.importTranscripts(uris) }
@@ -367,6 +369,16 @@ fun SessionsCard(vm: PendantViewModel) {
                         dismissButton = {
                             TextButton(onClick = { confirmingClear = false }) { Text("Cancel") }
                         },
+                    )
+                }
+
+                pendingDelete?.let { del ->
+                    AlertDialog(
+                        onDismissRequest = { pendingDelete = null },
+                        title = { Text("Delete session ${del.session}?") },
+                        text = { Text("This removes the session, its audio and its transcript from the phone. With acknowledge-after-sync on, the pendant has already erased its copy, so this cannot be undone.") },
+                        confirmButton = { TextButton(onClick = { pendingDelete = null; vm.deleteSession(del.session) }) { Text("Delete") } },
+                        dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
                     )
                 }
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
@@ -394,44 +406,50 @@ fun SessionsCard(vm: PendantViewModel) {
                             val hasTranscript = vm.transcriptFile(sess.session).exists()
                             val paused = player is PendantViewModel.PlayerState.Paused &&
                                 (player as PendantViewModel.PlayerState.Paused).session == sess.session
-                            IconButton({ vm.playSession(sess.session) },
-                                       enabled = player !is PendantViewModel.PlayerState.Decoding) {
-                                Icon(
-                                    when {
-                                        playing -> Icons.Filled.Pause
-                                        paused -> Icons.Filled.PlayArrow
-                                        else -> Icons.Filled.PlayArrow
-                                    },
-                                    contentDescription = when {
-                                        playing -> "Pause"
-                                        paused -> "Resume"
-                                        else -> "Play"
-                                    })
-                            }
-                            if (paused) {
-                                IconButton({ vm.stopPlayback() }) {
-                                    Icon(Icons.Filled.Stop, contentDescription = "Stop")
+                            Row(verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                                IconButton({ vm.playSession(sess.session) },
+                                           enabled = player !is PendantViewModel.PlayerState.Decoding) {
+                                    Icon(
+                                        when {
+                                            playing -> Icons.Filled.Pause
+                                            paused -> Icons.Filled.PlayArrow
+                                            else -> Icons.Filled.PlayArrow
+                                        },
+                                        contentDescription = when {
+                                            playing -> "Pause"
+                                            paused -> "Resume"
+                                            else -> "Play"
+                                        })
                                 }
-                            }
-                            IconButton({ vm.exportSession(sess.session) },
-                                       enabled = player !is PendantViewModel.PlayerState.Decoding) {
-                                Icon(Icons.Filled.Save, contentDescription = "Export WAV")
-                            }
-                            IconButton({ vm.exportSessionAudioAndTranscript(sess.session) },
-                                       enabled = player !is PendantViewModel.PlayerState.Decoding) {
-                                Icon(Icons.Filled.Share, contentDescription = "Export audio + transcript")
-                            }
-                            IconButton({ vm.shareTranscript(sess.session) }, enabled = hasTranscript) {
-                                Icon(Icons.Filled.Description, contentDescription = "Share transcript")
-                            }
-                            IconButton({ vm.transcribeSession(sess.session) },
-                                       enabled = vm.model.value.path != null &&
-                                           trans !is PendantViewModel.TransState.Running) {
-                                Icon(Icons.Filled.GraphicEq, contentDescription = "Transcribe")
-                            }
-                            IconButton({ vm.enrollSession(sess.session) },
-                                       enabled = speakerState.loaded) {
-                                Icon(Icons.Filled.PersonAdd, contentDescription = "Enroll voice")
+                                if (paused) {
+                                    IconButton({ vm.stopPlayback() }) {
+                                        Icon(Icons.Filled.Stop, contentDescription = "Stop")
+                                    }
+                                }
+                                IconButton({ vm.exportSession(sess.session) },
+                                           enabled = player !is PendantViewModel.PlayerState.Decoding) {
+                                    Icon(Icons.Filled.Save, contentDescription = "Export WAV")
+                                }
+                                IconButton({ vm.exportSessionAudioAndTranscript(sess.session) },
+                                           enabled = player !is PendantViewModel.PlayerState.Decoding) {
+                                    Icon(Icons.Filled.Share, contentDescription = "Export audio + transcript")
+                                }
+                                IconButton({ vm.shareTranscript(sess.session) }, enabled = hasTranscript) {
+                                    Icon(Icons.Filled.Description, contentDescription = "Share transcript")
+                                }
+                                IconButton({ vm.transcribeSession(sess.session) },
+                                           enabled = vm.model.value.path != null &&
+                                               trans !is PendantViewModel.TransState.Running) {
+                                    Icon(Icons.Filled.GraphicEq, contentDescription = "Transcribe")
+                                }
+                                IconButton({ vm.enrollSession(sess.session) },
+                                           enabled = speakerState.loaded) {
+                                    Icon(Icons.Filled.PersonAdd, contentDescription = "Enroll voice")
+                                }
+                                IconButton({ pendingDelete = sess }) {
+                                    Icon(Icons.Filled.Delete, contentDescription = "Delete session")
+                                }
                             }
                         }
                     }
