@@ -376,6 +376,29 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Removes this session's voice enrollment (the person-minus icon). Audio,
+     *  transcript and playback are untouched. If it was the only enrolled session,
+     *  scoring is reset until something is enrolled again. */
+    fun unenrollSession(s: Int) {
+        if (!speakerVecs.containsKey(s)) {
+            _speakerNote.value = "Your voice wasn't enrolled from session $s."
+            return
+        }
+        java.io.File(speakerDir(), "vec_$s.bin").delete()
+        speakerVecs.remove(s)
+        recomputeCentroid()
+        val enrolled = speakerVecs.keys.sorted()
+        prefs.edit()
+            .putString("speaker_enrolled", if (enrolled.isEmpty()) null else enrolled.joinToString(","))
+            .apply()
+        _speaker.value = _speaker.value.copy(enrolled = enrolled)
+        _speakerScores.value = _speakerScores.value - s
+        _speakerNote.value = if (enrolled.isEmpty())
+            "Removed your voice from session $s. No sessions enrolled now; tap person+ on one to enroll again."
+        else
+            "Removed your voice from session $s."
+    }
+
     fun scoreSessions() {
         if (!_speaker.value.loaded) { _speakerNote.value = "Load the voice model file first."; return }
         if (speakerVecs.isEmpty()) { _speakerNote.value = "Enroll a session of your voice first."; return }

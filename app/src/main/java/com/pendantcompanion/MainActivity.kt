@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pendantcompanion.ui.PendantViewModel
@@ -49,6 +50,16 @@ import java.util.zip.ZipOutputStream
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import java.util.Locale
+
+/** Breaks a raw transcript wall of text into readable paragraphs: two sentences
+ *  per paragraph when punctuation allows, otherwise ~24-word chunks. */
+fun formatTranscriptText(raw: String): String {
+    val t = raw.trim()
+    if (t.length < 250) return t
+    val sentences = Regex("(?<=[.!?])\\s+").split(t).map { it.trim() }.filter { it.isNotEmpty() }
+    return if (sentences.size >= 3) sentences.chunked(2).joinToString("\n\n") { it.joinToString(" ") }
+    else t.split(Regex("\\s+")).chunked(24).joinToString("\n\n") { it.joinToString(" ") }
+}
 
 fun exportFlashPages(context: android.content.Context): Int {
     val dir = File(context.filesDir, "flash_pages")
@@ -459,6 +470,10 @@ fun SessionsCard(vm: PendantViewModel) {
                                            enabled = speakerState.loaded) {
                                     Icon(Icons.Filled.PersonAdd, contentDescription = "Enroll voice")
                                 }
+                                IconButton(modifier = Modifier.size(36.dp), onClick = { vm.unenrollSession(sess.session) },
+                                           enabled = speakerState.loaded && speakerState.enrolled.contains(sess.session)) {
+                                    Icon(Icons.Filled.PersonRemove, contentDescription = "Remove my voice from this session")
+                                }
                                 IconButton(modifier = Modifier.size(36.dp), onClick = { pendingDelete = sess }) {
                                     Icon(Icons.Filled.Delete, contentDescription = "Delete session")
                                 }
@@ -683,9 +698,11 @@ fun SearchCard(vm: PendantViewModel) {
                             if (!ttsReady && text.isNotEmpty()) {
                                 Text("Speech engine loading...", style = MaterialTheme.typography.bodySmall)
                             }
+                            val display = remember(sess) { formatTranscriptText(text) }
                             Text(
-                                if (text.isEmpty()) "No transcript saved for this session." else text,
-                                style = MaterialTheme.typography.bodySmall,
+                                if (text.isEmpty()) "No transcript saved for this session." else display,
+                                style = MaterialTheme.typography.bodyMedium,
+                                lineHeight = 24.sp,
                             )
                         }
                     },
