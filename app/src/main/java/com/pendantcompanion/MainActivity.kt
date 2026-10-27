@@ -310,6 +310,8 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         Spacer(Modifier.height(8.dp))
         SessionsCard(vm)
         Spacer(Modifier.height(8.dp))
+        VoiceInsightsCard(vm)
+        Spacer(Modifier.height(8.dp))
         val ctx = LocalContext.current
         var exportedCount by remember { mutableStateOf(-1) }
         Button({ exportedCount = exportFlashPages(ctx) }) { Text("Export pages") }
@@ -466,13 +468,16 @@ fun SessionsCard(vm: PendantViewModel) {
                                                trans !is PendantViewModel.TransState.Running) {
                                     Icon(Icons.Filled.GraphicEq, contentDescription = "Transcribe")
                                 }
-                                IconButton(modifier = Modifier.size(36.dp), onClick = { vm.enrollSession(sess.session) },
-                                           enabled = speakerState.loaded) {
-                                    Icon(Icons.Filled.PersonAdd, contentDescription = "Enroll voice")
-                                }
-                                IconButton(modifier = Modifier.size(36.dp), onClick = { vm.unenrollSession(sess.session) },
-                                           enabled = speakerState.loaded && speakerState.enrolled.contains(sess.session)) {
-                                    Icon(Icons.Filled.PersonRemove, contentDescription = "Remove my voice from this session")
+                                val enrolledHere = speakerState.enrolled.contains(sess.session)
+                                IconButton(modifier = Modifier.size(36.dp),
+                                           enabled = speakerState.loaded,
+                                           onClick = { if (enrolledHere) vm.unenrollSession(sess.session) else vm.enrollSession(sess.session) }) {
+                                    Icon(
+                                        if (enrolledHere) Icons.Filled.PersonAdd else Icons.Filled.PersonRemove,
+                                        contentDescription = if (enrolledHere)
+                                            "Marked as you; tap to remove your voice from this session"
+                                        else
+                                            "Not marked as you; tap to mark this session as your voice")
                                 }
                                 IconButton(modifier = Modifier.size(36.dp), onClick = { pendingDelete = sess }) {
                                     Icon(Icons.Filled.Delete, contentDescription = "Delete session")
@@ -512,6 +517,77 @@ fun SessionsCard(vm: PendantViewModel) {
             }
             decodeNote?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+@Composable
+fun VoiceInsightsCard(vm: PendantViewModel) {
+    val sessions by vm.sessions.collectAsState()
+    val speakerState by vm.speaker.collectAsState()
+    val scores by vm.speakerScores.collectAsState()
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Your voice insights", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            if (!speakerState.loaded || speakerState.enrolled.isEmpty()) {
+                Text(
+                    "Load the voice model and tick a session as yours (the person icon) to switch this card on. " +
+                        "It then shows the sessions where you were detected, what you said in each, and how your speaking is trending by day and month.",
+                    style = MaterialTheme.typography.bodySmall)
+            } else {
+                val insights = remember(sessions, scores) { vm.voiceInsights() }
+                if (insights.detected.isEmpty()) {
+                    Text(
+                        "No sessions detected your voice yet. Tap Score all sessions in the voice card above, then come back here.",
+                        style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Text(
+                        "You were detected in ${insights.detected.size} session${if (insights.detected.size == 1) "" else "s"}",
+                        style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                    insights.detected.take(6).forEach { d ->
+                        Column {
+                            Text(
+                                "Session ${d.session} · " +
+                                    (if (d.startMs > 0)
+                                        java.text.SimpleDateFormat("d MMM, h:mm a", java.util.Locale.getDefault())
+                                            .format(java.util.Date(d.startMs))
+                                    else "date not recorded") +
+                                    " · ${d.youPct}% you · ~${d.durationSec / 60}m ${d.durationSec % 60}s · ${d.words} words",
+                                style = MaterialTheme.typography.bodySmall)
+                            d.excerpt?.let { ex ->
+                                Text(
+                                    ex,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontStyle = FontStyle.Italic,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                    if (insights.detected.size > 6) {
+                        Text("+ ${insights.detected.size - 6} earlier sessions",
+                             style = MaterialTheme.typography.bodySmall)
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                    Text("By day", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                    insights.days.take(7).forEach { s ->
+                        Text(
+                            "${s.label}: ${"%.0f".format(s.minutes)} min · ${s.sessions} session${if (s.sessions == 1) "" else "s"} · ${s.words} words · ${"%.1f".format(s.fillerRate)} filler words per 100",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("By month", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                    insights.months.take(6).forEach { s ->
+                        Text(
+                            "${s.label}: ${"%.1f".format(s.minutes / 60.0)} h · ${s.sessions} sessions · ${s.words} words · ${"%.1f".format(s.fillerRate)} filler words per 100",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    insights.hints.forEach { h ->
+                        Text(h, style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
         }
     }

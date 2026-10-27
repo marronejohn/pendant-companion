@@ -1790,6 +1790,84 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             ?.readText()?.trim()
             ?.take(chars)?.let { if (it.length == chars) it.trimEnd() + "\u2026" else it }
 
+    data class DetectedSession(val session: Int, val startMs: Long, val durationSec: Long,
+        val youPct: Int, val words: Int, val fillers: Int, val excerpt: String?)
+    data class VoicePeriodStat(val label: String, val minutes: Double, val sessions: Int,
+        val words: Int, val fillers: Int, val fillerRate: Double)
+    data class VoiceInsights(val detected: List<DetectedSession>, val days: List<VoicePeriodStat>,
+        val months: List<VoicePeriodStat>, val hints: List<String>)
+
+    /** Reads the latest speaker scores and transcripts and builds day/month stats for the insights card. */
+    fun voiceInsights(): VoiceInsights {
+        val scores = _speakerScores.value
+        val fillerWords = listOf("um", "uh", "er", "ah", "hmm", "like", "you know",
+            "sort of", "kind of", "basically", "actually", "literally")
+        val det = mutableListOf<DetectedSession>()
+        for (si in _sessions.value) {
+            val sv = scores[si.session] ?: continue
+            if (sv.youPct < 1) continue
+            val txt = transcriptFile(si.session).takeIf { it.exists() }?.readText()?.trim()
+            val words = txt?.split(Regex("\\s+"))?.count { it.isNotBlank() } ?: 0
+            val lower = txt?.lowercase() ?: ""
+            var fill = 0
+            for (w in fillerWords) {
+                val pat = if (w.contains(' ')) Regex("\\b" + Regex.escape(w) + "\\b") else Regex("\\b$w\\b")
+                fill += pat.findAll(lower).count()
+            }
+            det.add(DetectedSession(si.session, si.startMs, si.durationSec, sv.youPct, words, fill,
+                txt?.take(200)))
+        }
+        det.sortByDescending { it.startMs }
+        val cal = java.util.Calendar.getInstance()
+        fun dayKey(ms: Long): Long {
+            cal.timeInMillis = ms
+            cal.set(java.util.Calendar.HOUR_OF_DAY, 0); cal.set(java.util.Calendar.MINUTE, 0)
+            cal.set(java.util.Calendar.SECOND, 0); cal.set(java.util.Calendar.MILLISECOND, 0)
+            return cal.timeInMillis
+        }
+        fun monthKey(ms: Long): Long {
+            cal.timeInMillis = ms
+            cal.set(java.util.Calendar.DAY_OF_MONTH, 1)
+            cal.set(java.util.Calendar.HOUR_OF_DAY, 0); cal.set(java.util.Calendar.MINUTE, 0)
+            cal.set(java.util.Calendar.SECOND, 0); cal.set(java.util.Calendar.MILLISECOND, 0)
+            return cal.timeInMillis
+        }
+        fun fmt(ms: Long, pattern: String): String =
+            java.text.SimpleDateFormat(pattern, java.util.Locale.getDefault()).format(java.util.Date(ms))
+        fun agg(keyOf: (Long) -> Long, labelOf: (Long) -> String): List<VoicePeriodStat> =
+            det.filter { it.startMs > 0 }
+                .groupBy { keyOf(it.startMs) }
+                .entries.sortedByDescending { it.key }
+                .map { (k, list) ->
+                    val mins = list.sumOf { it.durationSec } / 60.0
+                    val w = list.sumOf { it.words }
+                    val f = list.sumOf { it.fillers }
+                    VoicePeriodStat(labelOf(k), mins, list.size, w, f,
+                        if (w > 0) f * 100.0 / w else 0.0)
+                }
+        val days = agg(::dayKey) { fmt(it, "d MMM yyyy") }
+        val months = agg(::monthKey) { fmt(it, "MMM yyyy") }
+        val hints = mutableListOf<String>()
+        if (det.isNotEmpty()) {
+            hints.add(
+                "Across ${det.size} session${if (det.size == 1) "" else "s"} with your voice: " +
+                    "${"%.0f".format(det.sumOf { it.durationSec } / 60.0)} min and ${det.sumOf { it.words }} words in total. " +
+                    "Filler words counted: um, uh, er, ah, hmm, like, you know, sort of, kind of, basically, actually, literally.")
+        }
+        if (months.size >= 2) {
+            val cur = months[0]; val prev = months[1]
+            if (prev.fillerRate > 0.0 || cur.fillerRate > 0.0) {
+                hints.add(
+                    if (cur.fillerRate <= prev.fillerRate)
+                        "Filler words this month: ${"%.1f".format(cur.fillerRate)} per 100 words, down from ${"%.1f".format(prev.fillerRate)} last month. Keep it up."
+                    else
+                        "Filler words this month: ${"%.1f".format(cur.fillerRate)} per 100 words, up from ${"%.1f".format(prev.fillerRate)} last month. Worth a watch."
+                )
+            }
+        }
+        return VoiceInsights(det, days, months, hints)
+    }
+
     /** Import transcript text files picked with the SAF picker. File names
      *  must carry the session number, e.g. session-14.txt or transcript-14.txt. */
     fun importTranscripts(uris: List<android.net.Uri>) {
