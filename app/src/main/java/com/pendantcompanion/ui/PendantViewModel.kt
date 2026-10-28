@@ -474,6 +474,22 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList())
     val sessions: StateFlow<List<SessionInfo>> = _sessions
 
+    val rawSessions: StateFlow<List<SessionInfo>> = _sessions
+
+    // Minimum recording length: sessions shorter than this (when their length is
+    // known) are hidden from the recordings list, skipped by the transcription
+    // batch and left out of the insights card. The audio itself stays on the phone.
+    private val _minSessionSec = MutableStateFlow(prefs.getInt("min_session_sec", 78))
+    val minSessionSec: StateFlow<Int> = _minSessionSec
+    fun setMinSessionSec(sec: Int) {
+        val v = sec.coerceIn(0, 3600)
+        _minSessionSec.value = v
+        prefs.edit().putInt("min_session_sec", v).apply()
+    }
+    /** True when the session's length is known and under the minimum. */
+    private fun shortSession(s: SessionInfo, min: Int): Boolean =
+        s.durationSec in 1 until min
+
     sealed interface PlayerState {
         object Idle : PlayerState
         data class Decoding(val session: Int, val done: Int, val total: Int) : PlayerState
@@ -1615,7 +1631,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             // workers; larger ones (base.en and up) use 2 to stay in memory.
             val workers = if (mf.length() > 50_000_000) 2 else 3
             val perWorker = maxOf(2, cores / workers)
-            val targets = _sessions.value.filter { it.frames > 0 }.sortedBy { it.session }
+            val minSec = _minSessionSec.value
+            val targets = _sessions.value
+                .filter { it.frames > 0 && !shortSession(it, minSec) }
+                .sortedBy { it.session }
             if (targets.isEmpty()) {
                 _trans.value = TransState.TransError(-1,
                     "Nothing to transcribe yet: the recordings list is empty. Sync the pendant first.")
@@ -1804,6 +1823,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             "sort of", "kind of", "basically", "actually", "literally")
         val det = mutableListOf<DetectedSession>()
         for (si in _sessions.value) {
+            if (shortSession(si, _minSessionSec.value)) continue
             val sv = scores[si.session] ?: continue
             if (sv.youPct < 1) continue
             val txt = transcriptFile(si.session).takeIf { it.exists() }?.readText()?.trim()

@@ -348,6 +348,11 @@ fun SessionsCard(vm: PendantViewModel) {
     val trans by vm.trans.collectAsState()
     val decodeNote by vm.decodeNote.collectAsState()
     val cleaning by vm.cleaning.collectAsState()
+    val minSec by vm.minSessionSec.collectAsState()
+    val rawSessions by vm.rawSessions.collectAsState()
+    val shown = sessions.filter { it.durationSec <= 0 || it.durationSec >= minSec }
+    val hiddenCount = rawSessions.count { it.durationSec in 1 until minSec }
+    val durLabel = if (minSec < 60) "${minSec}s" else "${minSec / 60}m ${minSec % 60}s"
     LaunchedEffect(Unit) { vm.refreshSessions() }
     LaunchedEffect((sync as? PendantViewModel.SyncProgress)?.finished) {
         if ((sync as? PendantViewModel.SyncProgress)?.finished == true) vm.refreshSessions()
@@ -356,12 +361,25 @@ fun SessionsCard(vm: PendantViewModel) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Recordings from the pendant on this phone", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
-            if (sessions.isEmpty()) {
+            if (shown.isEmpty()) {
                 Text("Nothing saved yet. Tap Download flash first.",
                      style = MaterialTheme.typography.bodySmall)
             } else {
-                Text("${sessions.size} recording sessions",
+                Text("${shown.size} recording sessions",
                      style = MaterialTheme.typography.bodySmall)
+                if (hiddenCount > 0) {
+                    Text(
+                        "$hiddenCount short recording${if (hiddenCount == 1) "" else "s"} hidden (under $durLabel); their audio stays on this phone",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(
+                    "Shortest recording shown: $durLabel. The pendant itself always records; this only trims what the app lists and transcribes. Drag to change.",
+                    style = MaterialTheme.typography.bodySmall)
+                Slider(
+                    value = minSec.toFloat(),
+                    onValueChange = { vm.setMinSessionSec(it.toInt()) },
+                    valueRange = 0f..300f)
                 var pendingDelete by remember { mutableStateOf<PendantViewModel.SessionInfo?>(null) }
                 val pickTranscripts = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenMultipleDocuments()
@@ -412,7 +430,7 @@ fun SessionsCard(vm: PendantViewModel) {
                     )
                 }
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
-                    items(sessions) { sess ->
+                    items(shown) { sess ->
                         val playing = player is PendantViewModel.PlayerState.Playing &&
                             (player as PendantViewModel.PlayerState.Playing).session == sess.session
                         Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
