@@ -1017,7 +1017,12 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                             OpusDecoder.decodeToWav(packets, wav, keepGoing = { ctx.isActive })
                         }
                         val voiced = voicedWindows(wav)
-                        if (voiced == 0 && !hasRealTranscript(s.session)) {
+                        val secs = wavSeconds(wav)
+                        // Empty means no real transcript AND either no audible
+                        // audio at all or a recording too short to hold speech
+                        // (under 5 seconds): one-page stubs decode to a second
+                        // or two of room noise that trips the RMS floor.
+                        if (!hasRealTranscript(s.session) && (voiced == 0 || secs < 5.0)) {
                             removeSessionFiles(s.session)
                             removed++; removedIds.add(s.session)
                         } else kept++
@@ -1052,6 +1057,12 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         tagsFile(s).delete()
         java.io.File(speakerDir(), "vec_$s.bin").delete()
         speakerVecs.remove(s)
+    }
+
+    /** Length of a decoded WAV in seconds (16-bit mono at OpusDecoder.SAMPLE_RATE). */
+    private fun wavSeconds(wav: java.io.File): Double {
+        if (wav.length() <= 44L) return 0.0
+        return (wav.length() - 44L) / (OpusDecoder.SAMPLE_RATE * 2.0)
     }
 
     /** True when a session's transcript has real words, not just silence markers. */

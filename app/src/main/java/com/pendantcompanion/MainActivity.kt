@@ -424,7 +424,7 @@ fun SessionsCard(vm: PendantViewModel) {
                     AlertDialog(
                         onDismissRequest = { confirmingClean = false },
                         title = { Text("Delete empty recordings?") },
-                        text = { Text("Scans every recording (decoding where needed) and removes the ones with no speech-like audio at all. Anything with voice, or with real transcript text, is always kept. Removed sessions are gone for good.") },
+                        text = { Text("Scans every recording (decoding where needed) and removes the ones with no speech-like audio at all, plus recordings under 5 seconds long (those never hold real speech). Anything longer with voice, or with real transcript text, is always kept. Removed sessions are gone for good.") },
                         confirmButton = { TextButton(onClick = { confirmingClean = false; vm.cleanEmptySessions() }) { Text("Scan and delete") } },
                         dismissButton = { TextButton(onClick = { confirmingClean = false }) { Text("Cancel") } },
                     )
