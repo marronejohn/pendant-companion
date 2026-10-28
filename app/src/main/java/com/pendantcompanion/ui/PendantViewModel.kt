@@ -945,6 +945,46 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Delete every session shorter than the minimum length (only ones whose
+     *  length is known; unknown-length sessions are never touched). */
+    fun deleteShortSessions(min: Int) {
+        if (_cleaning.value || BatchRunner.job?.isActive == true) return
+        val targets = _sessions.value.filter { shortSession(it, min) }.map { it.session }
+        if (targets.isEmpty()) return
+        _cleaning.value = true
+        scope.launch(Dispatchers.IO) {
+            var removed = 0
+            try {
+                val cur = _player.value
+                val curSess = when (cur) {
+                    is PlayerState.Playing -> cur.session
+                    is PlayerState.Paused -> cur.session
+                    else -> -1
+                }
+                for (s in targets) {
+                    if (curSess == s) {
+                        scope.launch(Dispatchers.Main) { stopPlayback() }
+                    }
+                    removeSessionFiles(s)
+                    _speakerScores.value = _speakerScores.value - s
+                    removed++
+                }
+                recomputeCentroid()
+                val enrolled = speakerVecs.keys.sorted()
+                prefs.edit()
+                    .putString("speaker_enrolled", if (enrolled.isEmpty()) null else enrolled.joinToString(","))
+                    .apply()
+                _speaker.value = _speaker.value.copy(enrolled = enrolled)
+                refreshSessions()
+                _speakerNote.value = "Deleted $removed short recording${if (removed == 1) "" else "s"}."
+            } catch (e: Exception) {
+                _speakerNote.value = "Could not delete short recordings: ${e.message}"
+            } finally {
+                _cleaning.value = false
+            }
+        }
+    }
+
     /** Scan every recording and delete sessions with no speech-like audio at all. */
     fun cleanEmptySessions() {
         if (_cleaning.value || _sessions.value.isEmpty()) return

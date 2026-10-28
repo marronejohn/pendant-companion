@@ -418,7 +418,7 @@ fun SessionsCard(vm: PendantViewModel) {
                 Button(onClick = { confirmingClean = true },
                        enabled = trans !is PendantViewModel.TransState.Running && !cleaning &&
                                  player !is PendantViewModel.PlayerState.Decoding) {
-                    Text(if (cleaning) "Scanning recordings..." else "Delete empty recordings")
+                    Text(if (cleaning) "Deleting recordings..." else "Delete empty recordings")
                 }
                 if (confirmingClean) {
                     AlertDialog(
@@ -427,6 +427,22 @@ fun SessionsCard(vm: PendantViewModel) {
                         text = { Text("Scans every recording (decoding where needed) and removes the ones with no speech-like audio at all. Anything with voice, or with real transcript text, is always kept. Removed sessions are gone for good.") },
                         confirmButton = { TextButton(onClick = { confirmingClean = false; vm.cleanEmptySessions() }) { Text("Scan and delete") } },
                         dismissButton = { TextButton(onClick = { confirmingClean = false }) { Text("Cancel") } },
+                    )
+                }
+                var confirmingShorts by remember { mutableStateOf(false) }
+                Button(onClick = { confirmingShorts = true },
+                       enabled = hiddenCount > 0 && trans !is PendantViewModel.TransState.Running && !cleaning &&
+                                 player !is PendantViewModel.PlayerState.Decoding,
+                       colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                    Text("Delete $hiddenCount short recordings")
+                }
+                if (confirmingShorts) {
+                    AlertDialog(
+                        onDismissRequest = { confirmingShorts = false },
+                        title = { Text("Delete $hiddenCount short recordings?") },
+                        text = { Text("This permanently removes every recording shorter than $durLabel (the ones hidden from the list), including their audio and transcripts. This cannot be undone.") },
+                        confirmButton = { TextButton(onClick = { confirmingShorts = false; vm.deleteShortSessions(minSec) }) { Text("Delete") } },
+                        dismissButton = { TextButton(onClick = { confirmingShorts = false }) { Text("Cancel") } },
                     )
                 }
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
