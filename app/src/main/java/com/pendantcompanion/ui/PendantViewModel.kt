@@ -204,6 +204,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                             o.getLong("durationSec"), o.optLong("startMs"))
                     }.sortedBy { it.session }
                     if (list.isNotEmpty()) _sessions.value = list
+                    reloadScoresFromTags()
                 }
             } catch (_: Exception) {}
         }
@@ -446,8 +447,64 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 _speakerScores.value = res
                 _speakerNote.value = "Scored ${res.size} sessions against your voiceprint."
+                _insightsVersion.value += 1
             } catch (e: Exception) {
                 _speakerNote.value = "Scoring failed: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
+
+    /** Rebuilds the speaker scores from the saved per-session tags files, so
+     *  scored sessions survive an app restart instead of only living in RAM. */
+    private fun reloadScoresFromTags() {
+        val res = mutableMapOf<Int, SessionVoice>()
+        val dir = java.io.File(getApplication<Application>().filesDir, "transcripts")
+        dir.listFiles()?.forEach { f ->
+            val m = Regex("session_(\\d+)\\.tags\\.json").matchEntire(f.name) ?: return@forEach
+            try {
+                val o = org.json.JSONObject(f.readText())
+                val thr = o.getDouble("thr")
+                val arr = o.getJSONArray("w")
+                if (arr.length() == 0) return@forEach
+                var you = 0
+                for (j in 0 until arr.length()) {
+                    if (arr.getJSONArray(j).getDouble(1) >= thr) you++
+                }
+                val s = m.groupValues[1].toInt()
+                res[s] = SessionVoice(s, you * 100 / arr.length(), arr.length(), arr.length())
+            } catch (_: Exception) {}
+        }
+        _speakerScores.value = res
+        _insightsVersion.value += 1
+    }
+
+    private val _insightsBusy = MutableStateFlow(false)
+    val insightsBusy: StateFlow<Boolean> = _insightsBusy
+    private val _insightsVersion = MutableStateFlow(0)
+    val insightsVersion: StateFlow<Int> = _insightsVersion
+
+    /** "Insights now": refresh the session list, reload every saved score from
+     *  disk, and if nothing has ever been scored, run a full scoring pass so the
+     *  card fills without a separate trip to the voice card. */
+    fun insightsNow() {
+        if (_insightsBusy.value) return
+        _insightsBusy.value = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                refreshSessions()
+                reloadScoresFromTags()
+                val hadScores = _speakerScores.value.isNotEmpty()
+                if (!hadScores && _speaker.value.loaded && speakerVecs.isNotEmpty()) {
+                    _insightsBusy.value = false
+                    scoreSessions()
+                    return@launch
+                }
+                _decodeNote.value = if (hadScores) "Insights refreshed from ${_speakerScores.value.size} scored sessions."
+                                    else "Nothing scored yet: load the voice model, enroll a session, then try Insights now again."
+            } catch (e: Exception) {
+                _decodeNote.value = "Insights refresh failed: ${e.message}"
+            } finally {
+                _insightsBusy.value = false
             }
         }
     }
@@ -897,6 +954,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     SessionInfo(sess, pf[0].toInt(), pf[1], pf[1] * 20 / 1000, startMs)
                 }.sortedBy { it.session }
                 _sessions.value = list
+                reloadScoresFromTags()
                 try {
                     val arr = org.json.JSONArray()
                     list.forEach { s ->

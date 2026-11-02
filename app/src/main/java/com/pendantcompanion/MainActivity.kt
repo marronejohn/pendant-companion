@@ -560,6 +560,8 @@ fun VoiceInsightsCard(vm: PendantViewModel) {
     val sessions by vm.sessions.collectAsState()
     val speakerState by vm.speaker.collectAsState()
     val scores by vm.speakerScores.collectAsState()
+    val insightsBusy by vm.insightsBusy.collectAsState()
+    val insightsVersion by vm.insightsVersion.collectAsState()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Your voice insights", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -570,7 +572,10 @@ fun VoiceInsightsCard(vm: PendantViewModel) {
                         "It then shows the sessions where you were detected, what you said in each, and how your speaking is trending by day and month.",
                     style = MaterialTheme.typography.bodySmall)
             } else {
-                val insights = remember(sessions, scores) { vm.voiceInsights() }
+                Button(onClick = { vm.insightsNow() }, enabled = !insightsBusy) {
+                    Text(if (insightsBusy) "Generating insights..." else "Insights now")
+                }
+                val insights = remember(sessions, scores, insightsVersion) { vm.voiceInsights() }
                 if (insights.detected.isEmpty()) {
                     Text(
                         "No sessions detected your voice yet. Tap Score all sessions in the voice card above, then come back here.",
