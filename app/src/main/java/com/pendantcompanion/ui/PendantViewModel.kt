@@ -413,8 +413,12 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 if (list.isEmpty()) { _speakerNote.value = "No sessions on the phone yet; sync first."; return@launch }
                 val res = mutableMapOf<Int, SessionVoice>()
                 var i = 0
+                var skipped = 0
                 for (si in list) {
                     if (speakerStop) return@launch
+                    // Short or empty recordings never carry enough of the wearer's
+                    // voice to score meaningfully; leave them out entirely.
+                    if (shortSession(si, _minSessionSec.value) || si.pages <= 1) { skipped++; continue }
                     i++
                     _speakerNote.value = "Scoring session ${si.session} ($i of ${list.size})…"
                     try {
@@ -446,7 +450,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     } catch (e: Exception) { /* skip this session */ }
                 }
                 _speakerScores.value = res
-                _speakerNote.value = "Scored ${res.size} sessions against your voiceprint."
+                _speakerNote.value = "Scored ${res.size} sessions against your voiceprint" +
+                        (if (skipped > 0) " (skipped $skipped short or empty)." else ".")
                 _insightsVersion.value += 1
             } catch (e: Exception) {
                 _speakerNote.value = "Scoring failed: ${e.message ?: e.javaClass.simpleName}"
@@ -457,6 +462,9 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     /** Rebuilds the speaker scores from the saved per-session tags files, so
      *  scored sessions survive an app restart instead of only living in RAM. */
     private fun reloadScoresFromTags() {
+        val allow = _sessions.value
+                .filter { !shortSession(it, _minSessionSec.value) && it.pages > 1 }
+                .map { it.session }.toSet()
         val res = mutableMapOf<Int, SessionVoice>()
         val dir = java.io.File(getApplication<Application>().filesDir, "transcripts")
         dir.listFiles()?.forEach { f ->
@@ -471,6 +479,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     if (arr.getJSONArray(j).getDouble(1) >= thr) you++
                 }
                 val s = m.groupValues[1].toInt()
+                if (s !in allow) return@forEach
                 res[s] = SessionVoice(s, you * 100 / arr.length(), arr.length(), arr.length())
             } catch (_: Exception) {}
         }
