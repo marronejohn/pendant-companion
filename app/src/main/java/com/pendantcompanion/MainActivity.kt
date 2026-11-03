@@ -627,7 +627,7 @@ fun VoiceInsightsCard(vm: PendantViewModel) {
                 val insights = remember(sessions, scores, insightsVersion) { vm.voiceInsights() }
                 if (insights.detected.isEmpty()) {
                     Text(
-                        "No sessions detected your voice yet. Tap Score all sessions in the voice card above, then come back here.",
+                        "No sessions detected your voice yet. Tap Score new sessions in the voice card above, then come back here.",
                         style = MaterialTheme.typography.bodySmall)
                 } else {
                     Text(
@@ -1074,7 +1074,7 @@ fun SpeakerCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                    valueRange = 0.5f..0.95f, enabled = speaker.loaded)
             Button({ vm.scoreSessions() },
                    enabled = speaker.loaded && speaker.enrolled.isNotEmpty()) {
-                Text("Score all sessions")
+                Text("Score new sessions")
             }
             if (scores.isNotEmpty()) {
                 Text("Your voice, per session:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)

@@ -322,6 +322,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         for (i in 0 until 192) acc[i] /= norm
         speakerCentroid = acc
         writeFloats(java.io.File(speakerDir(), "enroll.bin"), acc)
+        prefs.edit().putInt("speaker_enroll_version", prefs.getInt("speaker_enroll_version", 1) + 1).apply()
     }
 
     fun clearEnrollment() {
@@ -400,7 +401,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             "Removed your voice from session $s."
     }
 
-    fun scoreSessions() {
+    fun scoreSessions(force: Boolean = false) {
         if (!_speaker.value.loaded) { _speakerNote.value = "Load the voice model file first."; return }
         if (speakerVecs.isEmpty()) { _speakerNote.value = "Enroll a session of your voice first."; return }
         if (speakerJob?.isActive == true) return
@@ -414,11 +415,24 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 val res = mutableMapOf<Int, SessionVoice>()
                 var i = 0
                 var skipped = 0
+                var skippedScored = 0
+                val enrollVersion = prefs.getInt("speaker_enroll_version", 1)
                 for (si in list) {
                     if (speakerStop) return@launch
                     // Short or empty recordings never carry enough of the wearer's
                     // voice to score meaningfully; leave them out entirely.
                     if (shortSession(si, _minSessionSec.value) || si.pages <= 1) { skipped++; continue }
+                    // Already scored against this voiceprint: keep the saved
+                    // score instead of redoing the model work.
+                    if (!force) {
+                        val tf = tagsFile(si.session)
+                        if (tf.exists()) {
+                            val storedEv = try {
+                                org.json.JSONObject(tf.readText()).optInt("ev", 0)
+                            } catch (_: Exception) { 0 }
+                            if (storedEv == enrollVersion) { skippedScored++; continue }
+                        }
+                    }
                     i++
                     _speakerNote.value = "Scoring session ${si.session} ($i of ${list.size})…"
                     try {
@@ -440,7 +454,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         val you = scores.count { it >= thr }
                         res[si.session] = SessionVoice(si.session, you * 100 / scores.size, scores.size, scores.size)
                         val sb = StringBuilder()
-                        sb.append("{\"win\":3.0,\"hop\":1.5,\"thr\":").append(thr).append(",\"w\":[")
+                        sb.append("{\"ev\":").append(enrollVersion).append(",\"win\":3.0,\"hop\":1.5,\"thr\":").append(thr).append(",\"w\":[")
                         starts.indices.forEach { j ->
                             if (j > 0) sb.append(",")
                             sb.append("[").append(starts[j]).append(",").append(scores[j]).append("]")
@@ -451,7 +465,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 _speakerScores.value = res
                 _speakerNote.value = "Scored ${res.size} sessions against your voiceprint" +
-                        (if (skipped > 0) " (skipped $skipped short or empty)." else ".")
+                        (if (skipped > 0 || skippedScored > 0) " (skipped $skipped short or empty, $skippedScored already scored)." else ".")
                 _insightsVersion.value += 1
             } catch (e: Exception) {
                 _speakerNote.value = "Scoring failed: ${e.message ?: e.javaClass.simpleName}"
@@ -471,7 +485,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             val m = Regex("session_(\\d+)\\.tags\\.json").matchEntire(f.name) ?: return@forEach
             try {
                 val o = org.json.JSONObject(f.readText())
-                val thr = o.getDouble("thr")
+                val thr = prefs.getFloat("speaker_threshold", 0.75f).toDouble()
                 val arr = o.getJSONArray("w")
                 if (arr.length() == 0) return@forEach
                 var you = 0
