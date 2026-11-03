@@ -140,19 +140,46 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _driveFolder = MutableStateFlow(prefs.getString("drive_tree_uri", null))
     val driveFolder: StateFlow<String?> = _driveFolder
+    private val _driveFolderInfo = MutableStateFlow(prefs.getString("drive_folder_info", "") ?: "")
+    val driveFolderInfo: StateFlow<String> = _driveFolderInfo
+    private val _mirrorNote = MutableStateFlow("")
+    val mirrorNote: StateFlow<String> = _mirrorNote
 
     /** One-time grant: the user picks a Drive folder in the system picker and
      *  the app keeps persistable read/write to it. Transcripts are mirrored
      *  there through the system document provider, so the app itself stays
      *  offline (no INTERNET permission). */
     fun setDriveFolder(uri: android.net.Uri) {
+        var granted = true
+        var err = ""
         try {
             getApplication<Application>().contentResolver.takePersistableUriPermission(
                 uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
                      android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        } catch (_: Exception) {}
+        } catch (e: Exception) { granted = false; err = e.message ?: e.javaClass.simpleName }
         prefs.edit().putString("drive_tree_uri", uri.toString()).apply()
         _driveFolder.value = uri.toString()
+        // Name the picked place and its provider, so a pick inside phone
+        // storage instead of Google Drive is visible instead of silent.
+        val where = try {
+            val docId = android.provider.DocumentsContract.getTreeDocumentId(uri)
+            val cr = getApplication<Application>().contentResolver
+            val docUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(uri, docId)
+            var name = ""
+            cr.query(docUri, arrayOf(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                     null, null, null)?.use { c -> if (c.moveToFirst()) name = c.getString(0) ?: "" }
+            val provider = when (uri.authority) {
+                "com.android.externalstorage.documents" -> "phone storage, NOT Google Drive"
+                "com.android.providers.downloads.documents" -> "Downloads, NOT Google Drive"
+                "com.google.android.apps.docs.storage",
+                "com.google.android.apps.docs.storage.legacy" -> "Google Drive"
+                else -> uri.authority ?: "unknown provider"
+            }
+            if (name.isNotBlank()) "$name ($provider)" else provider
+        } catch (e: Exception) { "unreadable folder: ${e.message ?: e.javaClass.simpleName}" }
+        val line = if (granted) "Linked: $where" else "Link problem: $err"
+        prefs.edit().putString("drive_folder_info", line).apply()
+        _driveFolderInfo.value = line
     }
 
     // Auto-sync on connect (default on): after the pendant connects and
@@ -357,15 +384,23 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         if (!_speaker.value.loaded) { _speakerNote.value = "Load the voice model file first."; return }
         if (speakerJob?.isActive == true) return
         speakerStop = false
+        // The icon flips at once; the voiceprint work runs in the background
+        // and the enrollment is reverted if it cannot finish.
+        _speaker.value = _speaker.value.copy(enrolled = (speakerVecs.keys + s).sorted())
+        fun failEnroll(msg: String) {
+            speakerVecs.remove(s)
+            _speaker.value = _speaker.value.copy(enrolled = speakerVecs.keys.sorted())
+            _speakerNote.value = msg
+        }
         speakerJob = scope.launch(Dispatchers.IO) {
             try {
                 _speakerNote.value = "Decoding session $s…"
                 val wav = ensureSessionWav(s) ?: run {
-                    _speakerNote.value = "No audio found for session $s."; return@launch }
+                    failEnroll("No audio found for session $s."); return@launch }
                 _speakerNote.value = "Reading the voiceprint from session $s…"
                 val samples = wavToSamples(wav)
                 val v = embedWindows(samples) ?: run {
-                    _speakerNote.value = "Not enough speech in session $s to enroll; try one where you talk for a minute."; return@launch }
+                    failEnroll("Not enough speech in session $s to enroll; try one where you talk for a minute."); return@launch }
                 speakerVecs[s] = v
                 writeFloats(java.io.File(speakerDir(), "vec_$s.bin"), v)
                 recomputeCentroid()
@@ -373,7 +408,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _speaker.value = _speaker.value.copy(enrolled = speakerVecs.keys.sorted())
                 _speakerNote.value = "Enrolled session $s. One is enough; more sessions make the voiceprint surer."
             } catch (e: Exception) {
-                _speakerNote.value = "Enroll failed: ${e.message ?: e.javaClass.simpleName}"
+                failEnroll("Enroll failed: ${e.message ?: e.javaClass.simpleName}")
             }
         }
     }
@@ -2164,27 +2199,45 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         synchronized(driveMirrorLock) { mirrorTranscriptsToDrive() }
     }
 
-    private fun mirrorTranscriptsToDrive() {
+    private fun mirrorTranscriptsToDrive(): String {
         try {
-            val uriStr = prefs.getString("drive_tree_uri", null) ?: return
+            val uriStr = prefs.getString("drive_tree_uri", null) ?: return "No folder picked yet."
             val treeUri = android.net.Uri.parse(uriStr)
             val cr = getApplication<Application>().contentResolver
             val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
             val treeDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
             val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
             val dir = java.io.File(getApplication<Application>().filesDir, "transcripts")
-            val files = dir.listFiles { f -> f.name.startsWith("session_") && f.name.endsWith(".txt") } ?: return
+            val files = dir.listFiles { f -> f.name.startsWith("session_") && f.name.endsWith(".txt") }
+                ?: return "No transcripts on this phone yet."
+            if (files.isEmpty()) return "No transcripts on this phone to copy yet."
+            var copied = 0; var already = 0; var failed = 0
             for (f in files) {
                 val m = Regex("session_(\\d+)\\.txt").find(f.name) ?: continue
                 val name = "${today}_session-${m.groupValues[1]}.txt"
-                if (treeHasChild(cr, treeUri, docId, name)) continue
+                if (treeHasChild(cr, treeUri, docId, name)) { already++; continue }
                 val created = try {
                     android.provider.DocumentsContract.createDocument(cr, treeDocUri, "text/plain", name)
-                } catch (_: Exception) { null } ?: continue
-                try { cr.openOutputStream(created)?.use { it.write(f.readBytes()) } } catch (_: Exception) {}
+                } catch (_: Exception) { null }
+                if (created == null) { failed++; continue }
+                try { cr.openOutputStream(created)?.use { it.write(f.readBytes()) } } catch (_: Exception) { failed++ }
+                if (created != null) copied++
             }
             pruneOldDriveTranscripts(cr, treeUri, docId)
-        } catch (_: Exception) {}
+            return if (failed == 0) "Drive folder OK: $copied copied, $already already there (of ${files.size} transcripts)."
+            else "Drive folder: $copied copied, $already already there, $failed FAILED (of ${files.size})."
+        } catch (e: Exception) {
+            return "Mirror failed: ${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    /** Runs the mirror on demand and shows the result on the settings card,
+     *  so a broken folder link is visible instead of silent. */
+    fun mirrorNow() {
+        scope.launch(Dispatchers.IO) {
+            val line = synchronized(driveMirrorLock) { mirrorTranscriptsToDrive() }
+            _mirrorNote.value = line
+        }
     }
 
     private fun treeHasChild(

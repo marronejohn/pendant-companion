@@ -947,6 +947,19 @@ fun AckCard(vm: PendantViewModel) {
                     Text(if (driveFolder == null) "Pick folder" else "Change folder")
                 }
             }
+            val driveInfo by vm.driveFolderInfo.collectAsState()
+            val mirrorNote by vm.mirrorNote.collectAsState()
+            Text(
+                if (driveFolder == null) "No folder linked yet."
+                else driveInfo.ifBlank { "Folder linked." },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (driveFolder != null) {
+                Button(onClick = { vm.mirrorNow() }) { Text("Mirror now") }
+                if (mirrorNote.isNotBlank()) {
+                    Text(mirrorNote, style = MaterialTheme.typography.bodySmall)
+                }
+            }
             Text(
                 "Every transcript is copied into that Drive folder as 2026-10-25_session-12.txt, and copies older " +
                     "than 14 days are deleted automatically, so Drive never accumulates them. Pick a folder inside " +
