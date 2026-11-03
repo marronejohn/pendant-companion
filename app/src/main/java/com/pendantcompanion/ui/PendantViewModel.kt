@@ -502,6 +502,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 refreshSessions()
                 reloadScoresFromTags()
+                loadReflections(force = true)
                 val hadScores = _speakerScores.value.isNotEmpty()
                 if (!hadScores && _speaker.value.loaded && speakerVecs.isNotEmpty()) {
                     _insightsBusy.value = false
@@ -514,6 +515,92 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _decodeNote.value = "Insights refresh failed: ${e.message}"
             } finally {
                 _insightsBusy.value = false
+            }
+        }
+    }
+
+    // ---- Reflection read-back: the nightly PDI review writes reflection and
+    // ---- review JSON files into the same Drive folder the app mirrors
+    // ---- transcripts to; this reads the newest ones back onto the card.
+    data class Reflection(
+        val kind: String, val label: String, val date: String, val summary: String,
+        val wins: List<String>, val improve: List<String>,
+        val commitments: List<String>, val ifThen: String?,
+    )
+
+    private val _reflection = MutableStateFlow<Reflection?>(null)
+    val reflection: StateFlow<Reflection?> = _reflection
+    private val _reflectionReviews = MutableStateFlow<List<Reflection>>(emptyList())
+    val reflectionReviews: StateFlow<List<Reflection>> = _reflectionReviews
+    private val _reflectionNote = MutableStateFlow("")
+    val reflectionNote: StateFlow<String> = _reflectionNote
+    private var reflectionLastLoadMs = 0L
+
+    private fun parseReflection(kind: String, label: String, text: String): Reflection? = try {
+        val o = org.json.JSONObject(text)
+        fun arr(k: String): List<String> {
+            val a = o.optJSONArray(k) ?: return emptyList()
+            return (0 until a.length()).mapNotNull { i -> a.optString(i).trim().takeIf { it.isNotEmpty() } }
+        }
+        val ifS = o.optString("if", "").trim().ifBlank { null }
+        val thS = o.optString("then", "").trim().ifBlank { null }
+        Reflection(kind, label,
+            o.optString("date", "").ifBlank { o.optString("period", "") },
+            o.optString("summary", "").trim(),
+            arr("wins"), arr("improve"), arr("commitments"),
+            if (ifS != null && thS != null) "If $ifS, then $thS." else null)
+    } catch (_: Exception) { null }
+
+    fun loadReflections(force: Boolean = false) {
+        if (!force && System.currentTimeMillis() - reflectionLastLoadMs < 60_000) return
+        reflectionLastLoadMs = System.currentTimeMillis()
+        scope.launch(Dispatchers.IO) {
+            try {
+                val uriStr = prefs.getString("drive_tree_uri", null) ?: run {
+                    _reflectionNote.value = "Pick the Drive folder in Settings first; reflections arrive there."
+                    return@launch
+                }
+                val treeUri = android.net.Uri.parse(uriStr)
+                val cr = getApplication<Application>().contentResolver
+                val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                val childrenUri = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+                data class Hit(val name: String, val id: String)
+                val hits = mutableListOf<Hit>()
+                cr.query(childrenUri, arrayOf(
+                    android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c ->
+                    val iId = c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val iName = c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    while (c.moveToNext()) {
+                        val n = c.getString(iName) ?: continue
+                        if (n.startsWith("reflection_") || n.startsWith("review_")) hits.add(Hit(n, c.getString(iId)))
+                    }
+                }
+                if (hits.isEmpty()) {
+                    _reflection.value = null
+                    _reflectionReviews.value = emptyList()
+                    _reflectionNote.value = "No reflections in the Drive folder yet."
+                    return@launch
+                }
+                val sorted = hits.sortedByDescending { it.name }
+                fun read(h: Hit): String? = try {
+                    cr.openInputStream(android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, h.id))
+                        ?.use { ins -> ins.readBytes().decodeToString() }
+                } catch (_: Exception) { null }
+                val daily = sorted.firstOrNull { it.name.startsWith("reflection_") }
+                _reflection.value = daily?.let { h ->
+                    read(h)?.let { t -> parseReflection("daily", h.name.removePrefix("reflection_").removeSuffix(".json"), t) }
+                }
+                val reviews = mutableListOf<Reflection>()
+                for (k in listOf("year", "quarter", "half", "month", "week")) {
+                    sorted.firstOrNull { it.name.startsWith("review_" + k + "_") }?.let { h ->
+                        read(h)?.let { t -> parseReflection(k, h.name.removePrefix("review_").removeSuffix(".json"), t) }?.let { reviews.add(it) }
+                    }
+                }
+                _reflectionReviews.value = reviews
+                _reflectionNote.value = if (_reflection.value != null) "" else "No daily reflection file found yet."
+            } catch (e: Exception) {
+                _reflectionNote.value = "Could not read reflections: ${e.message}"
             }
         }
     }

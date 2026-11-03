@@ -310,6 +310,8 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         Spacer(Modifier.height(8.dp))
         SessionsCard(vm)
         Spacer(Modifier.height(8.dp))
+        ReflectionCard(vm)
+        Spacer(Modifier.height(8.dp))
         VoiceInsightsCard(vm)
         Spacer(Modifier.height(8.dp))
         val ctx = LocalContext.current
@@ -555,6 +557,53 @@ fun SessionsCard(vm: PendantViewModel) {
         }
     }
 }
+@Composable
+fun ReflectionCard(vm: PendantViewModel) {
+    val r by vm.reflection.collectAsState()
+    val reviews by vm.reflectionReviews.collectAsState()
+    val note by vm.reflectionNote.collectAsState()
+    LaunchedEffect(Unit) { vm.loadReflections() }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Daily reflection", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            val cur = r
+            if (cur == null) {
+                Text(
+                    note.ifBlank { "No daily reflection yet. The nightly review writes one into your Drive folder; it appears here." },
+                    style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text(cur.date, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                if (cur.summary.isNotBlank()) Text(cur.summary, style = MaterialTheme.typography.bodyMedium)
+                if (cur.wins.isNotEmpty()) {
+                    Text("Did well", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    cur.wins.forEach { Text("\u2022 $it", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (cur.improve.isNotEmpty()) {
+                    Text("Improve", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    cur.improve.forEach { Text("\u2022 $it", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (cur.commitments.isNotEmpty()) {
+                    Text("Commitments", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    cur.commitments.forEach { Text("\u2022 $it", style = MaterialTheme.typography.bodySmall) }
+                }
+                cur.ifThen?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic)
+                }
+            }
+            if (reviews.isNotEmpty()) {
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                Text("Longer reviews", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                reviews.forEach { rv ->
+                    Text(
+                        rv.kind.replaceFirstChar { c -> c.uppercaseChar() } + " (" + rv.label + "): " + rv.summary.take(200),
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun VoiceInsightsCard(vm: PendantViewModel) {
     val sessions by vm.sessions.collectAsState()
