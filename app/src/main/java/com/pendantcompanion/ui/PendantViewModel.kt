@@ -401,12 +401,17 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 val samples = wavToSamples(wav)
                 val v = embedWindows(samples) ?: run {
                     failEnroll("Not enough speech in session $s to enroll; try one where you talk for a minute."); return@launch }
+                var vn = 0f
+                for (x in v) vn += x * x
+                if (!vn.isFinite() || vn <= 0f) {
+                    failEnroll("The voiceprint from session $s came out empty; try a session where you talk for a minute."); return@launch }
                 speakerVecs[s] = v
                 writeFloats(java.io.File(speakerDir(), "vec_$s.bin"), v)
                 recomputeCentroid()
                 prefs.edit().putString("speaker_enrolled", speakerVecs.keys.sorted().joinToString(",")).apply()
                 _speaker.value = _speaker.value.copy(enrolled = speakerVecs.keys.sorted())
                 _speakerNote.value = "Enrolled session $s. One is enough; more sessions make the voiceprint surer."
+                rescoreAfterEnrollChange()
             } catch (e: Exception) {
                 failEnroll("Enroll failed: ${e.message ?: e.javaClass.simpleName}")
             }
@@ -434,6 +439,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             "Removed your voice from session $s. No sessions enrolled now; tap person+ on one to enroll again."
         else
             "Removed your voice from session $s."
+        if (enrolled.isNotEmpty()) rescoreAfterEnrollChange()
     }
 
     fun scoreSessions(force: Boolean = false) {
@@ -443,17 +449,31 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         val c = speakerCentroid ?: return
         val thr = _speaker.value.threshold
         speakerStop = false
-        speakerJob = scope.launch(Dispatchers.IO) {
+        speakerJob = scope.launch(Dispatchers.IO) { scoreAll(force, c, thr) }
+    }
+
+    /** Scores every session against the current voiceprint without the busy
+     *  guard, so it can run the moment an enrollment change finishes (the
+     *  enroll job is still the active speakerJob at that point). */
+    fun rescoreAfterEnrollChange() {
+        val c = speakerCentroid ?: return
+        val thr = _speaker.value.threshold
+        speakerStop = false
+        scope.launch(Dispatchers.IO) { scoreAll(false, c, thr) }
+    }
+
+    private fun scoreAll(force: Boolean, c: FloatArray, thr: Float) {
+        run {
             try {
                 val list = _sessions.value
-                if (list.isEmpty()) { _speakerNote.value = "No sessions on the phone yet; sync first."; return@launch }
+                if (list.isEmpty()) { _speakerNote.value = "No sessions on the phone yet; sync first."; return }
                 val res = mutableMapOf<Int, SessionVoice>()
                 var i = 0
                 var skipped = 0
                 var skippedScored = 0
                 val enrollVersion = prefs.getInt("speaker_enroll_version", 1)
                 for (si in list) {
-                    if (speakerStop) return@launch
+                    if (speakerStop) return
                     // Short or empty recordings never carry enough of the wearer's
                     // voice to score meaningfully; leave them out entirely.
                     if (shortSession(si, _minSessionSec.value) || si.pages <= 1) { skipped++; continue }
@@ -515,11 +535,17 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 .filter { !shortSession(it, _minSessionSec.value) && it.pages > 1 }
                 .map { it.session }.toSet()
         val res = mutableMapOf<Int, SessionVoice>()
+        var stale = 0
+        val curEv = prefs.getInt("speaker_enroll_version", 1)
         val dir = java.io.File(getApplication<Application>().filesDir, "transcripts")
         dir.listFiles()?.forEach { f ->
             val m = Regex("session_(\\d+)\\.tags\\.json").matchEntire(f.name) ?: return@forEach
             try {
                 val o = org.json.JSONObject(f.readText())
+                // A tags file scored against an earlier voiceprint no longer
+                // describes the current one; hide it instead of showing
+                // numbers that look current but are not.
+                if (o.optInt("ev", 0) != curEv) { stale++; return@forEach }
                 val thr = prefs.getFloat("speaker_threshold", 0.75f).toDouble()
                 val arr = o.getJSONArray("w")
                 if (arr.length() == 0) return@forEach
@@ -534,6 +560,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         }
         _speakerScores.value = res
         _insightsVersion.value += 1
+        if (res.isEmpty() && stale > 0)
+            _speakerNote.value = "$stale sessions were scored against an earlier voiceprint; tap Score new sessions to update them."
     }
 
     private val _insightsBusy = MutableStateFlow(false)

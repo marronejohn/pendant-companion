@@ -1089,6 +1089,10 @@ fun SpeakerCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                    enabled = speaker.loaded && speaker.enrolled.isNotEmpty()) {
                 Text("Score new sessions")
             }
+            TextButton({ vm.scoreSessions(true) },
+                   enabled = speaker.loaded && speaker.enrolled.isNotEmpty()) {
+                Text("Rescore all sessions")
+            }
             if (scores.isNotEmpty()) {
                 Text("Your voice, per session:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                 scores.values.sortedByDescending { it.youPct }.forEach { sv ->
