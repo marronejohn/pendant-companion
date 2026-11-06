@@ -1,5 +1,6 @@
 package com.pendantcompanion.ui
 
+import com.pendantcompanion.ReflectionAi
 import android.app.Application
 import android.bluetooth.BluetoothDevice
 import androidx.lifecycle.AndroidViewModel
@@ -108,6 +109,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        // Keep the daily-insights alarm armed whenever the app opens.
+        try { ReflectionAi.armNext(getApplication()) } catch (_: Exception) {}
     }
 
     /** One pendant recording session found among the saved flash pages. */
@@ -2225,6 +2228,55 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     fun saveTranscript(session: Int, text: String) {
         transcriptFile(session).writeText(text)
         synchronized(driveMirrorLock) { mirrorTranscriptsToDrive() }
+    }
+
+    // ---- Daily insights (bring-your-own-key AI) ----
+
+    private val _aiEnabled = MutableStateFlow(prefs.getBoolean("ai_enabled", false))
+    val aiEnabled: StateFlow<Boolean> = _aiEnabled
+    private val _aiProvider = MutableStateFlow(ReflectionAi.provider(prefs))
+    val aiProvider: StateFlow<String> = _aiProvider
+    private val _aiKey = MutableStateFlow(ReflectionAi.key(prefs))
+    val aiKey: StateFlow<String> = _aiKey
+    private val _aiModel = MutableStateFlow(prefs.getString("ai_model", "") ?: "")
+    val aiModel: StateFlow<String> = _aiModel
+    private val _aiBaseUrl = MutableStateFlow(ReflectionAi.baseUrl(prefs))
+    val aiBaseUrl: StateFlow<String> = _aiBaseUrl
+    private val _aiHour = MutableStateFlow(ReflectionAi.hour(prefs))
+    val aiHour: StateFlow<Int> = _aiHour
+    private val _aiNote = MutableStateFlow(ReflectionAi.lastResult(prefs))
+    val aiNote: StateFlow<String> = _aiNote
+
+    fun setAiEnabled(on: Boolean) {
+        _aiEnabled.value = on
+        prefs.edit().putBoolean("ai_enabled", on).apply()
+        ReflectionAi.armNext(getApplication())
+    }
+
+    fun setAiProvider(v: String) {
+        _aiProvider.value = v
+        prefs.edit().putString("ai_provider", v).apply()
+        ReflectionAi.armNext(getApplication())
+    }
+
+    fun setAiKey(v: String) { _aiKey.value = v; prefs.edit().putString("ai_api_key", v.trim()).apply() }
+    fun setAiModel(v: String) { _aiModel.value = v; prefs.edit().putString("ai_model", v.trim()).apply() }
+    fun setAiBaseUrl(v: String) { _aiBaseUrl.value = v; prefs.edit().putString("ai_base_url", v.trim()).apply() }
+
+    fun setAiHour(h: Int) {
+        _aiHour.value = h
+        prefs.edit().putInt("ai_hour", h).apply()
+        ReflectionAi.armNext(getApplication())
+    }
+
+    fun refreshAiNote() { _aiNote.value = ReflectionAi.lastResult(prefs) }
+
+    /** Write today's card right now; rewrites an existing one, for testing. */
+    fun aiGenerateNow() {
+        scope.launch(Dispatchers.IO) {
+            _aiNote.value = "Calling the AI service..."
+            _aiNote.value = ReflectionAi.generateDue(getApplication(), manual = true)
+        }
     }
 
     private fun mirrorTranscriptsToDrive(): String {

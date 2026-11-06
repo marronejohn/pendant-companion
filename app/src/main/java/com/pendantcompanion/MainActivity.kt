@@ -35,6 +35,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -136,8 +138,23 @@ fun exportEverythingZip(context: android.content.Context): Int {
 
 
 class MainActivity : ComponentActivity() {
+    /** Writes every uncaught crash to crash_log.txt (shown on the sync card),
+     *  then lets the system handler run so the crash behaves normally. */
+    private fun installCrashLogger(ctx: android.content.Context) {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try {
+                java.io.File(ctx.filesDir, "crash_log.txt").writeText(
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()) +
+                        "  thread=" + t.name + "\n" + android.util.Log.getStackTraceString(e))
+            } catch (_: Exception) {}
+            prev?.uncaughtException(t, e)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashLogger(this)
         setContent { MaterialTheme(colorScheme = PendantColors) { Surface(Modifier.fillMaxSize()) { PendantApp() } } }
     }
 }
@@ -273,6 +290,19 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
                 Text(if (syncRunning) "Syncing..." else "Download flash")
             }
         }
+        val crashCtx = androidx.compose.ui.platform.LocalContext.current
+        val lastCrash = remember(crashCtx) {
+            try {
+                val f = java.io.File(crashCtx.filesDir, "crash_log.txt")
+                if (f.exists() && f.length() > 0) f.readText().take(700) else null
+            } catch (_: Exception) { null }
+        }
+        lastCrash?.let {
+            Spacer(Modifier.height(8.dp))
+            Text("LAST CRASH (screenshot this for Fo):\n" + it,
+                 style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.error)
+        }
         Spacer(Modifier.height(8.dp))
         (sync as? PendantViewModel.SyncProgress)?.let { p ->
             Card(Modifier.fillMaxWidth()) {
@@ -295,6 +325,8 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         LedCard(vm)
         Spacer(Modifier.height(8.dp))
         AckCard(vm)
+        Spacer(Modifier.height(8.dp))
+        AiCard(vm)
         Spacer(Modifier.height(8.dp))
         StorageCard(vm)
         Spacer(Modifier.height(8.dp))
@@ -980,6 +1012,81 @@ fun AckCard(vm: PendantViewModel) {
             )
         }
     }
+}
+
+@Composable
+fun AiCard(vm: PendantViewModel) {
+    val enabled by vm.aiEnabled.collectAsState()
+    val provider by vm.aiProvider.collectAsState()
+    val key by vm.aiKey.collectAsState()
+    val model by vm.aiModel.collectAsState()
+    val baseUrl by vm.aiBaseUrl.collectAsState()
+    val hour by vm.aiHour.collectAsState()
+    val note by vm.aiNote.collectAsState()
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Daily insights (AI)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Write cards automatically", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Switch(checked = enabled, onCheckedChange = { vm.setAiEnabled(it) })
+            }
+            Text(
+                "Once a day at the time below, the app sends the day's transcripts to the AI service you chose and writes the reflection cards into the same folder as the transcripts. The audio itself never leaves the phone, and your key stays in the app's private storage.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Service", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Button(onClick = { vm.setAiProvider("gemini") }, enabled = provider != "gemini") { Text("Gemini") }
+                Button(onClick = { vm.setAiProvider("openai") }, enabled = provider != "openai") { Text("OpenAI-compatible") }
+            }
+            OutlinedTextField(
+                value = key, onValueChange = { vm.setAiKey(it) },
+                label = { Text("API key") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            )
+            OutlinedTextField(
+                value = model, onValueChange = { vm.setAiModel(it) },
+                label = { Text("Model (default: " + if (provider == "gemini") "gemini-2.5-flash)" else "gpt-4o-mini)") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+            if (provider == "openai") {
+                OutlinedTextField(
+                    value = baseUrl, onValueChange = { vm.setAiBaseUrl(it) },
+                    label = { Text("API base URL, e.g. https://api.openai.com/v1") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Card time", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Button(onClick = { vm.setAiHour((hour + 23) % 24) }) { Text("\u2212") }
+                Text(aiHourText(hour), Modifier.padding(horizontal = 12.dp))
+                Button(onClick = { vm.setAiHour((hour + 1) % 24) }) { Text("+") }
+            }
+            Button(onClick = { vm.aiGenerateNow() }) { Text("Write today's card now") }
+            if (note.isNotBlank()) Text(note, style = MaterialTheme.typography.bodySmall)
+            Text(
+                "Setup, once:\n" +
+                    "1. Pick the transcripts folder in the Sync & automation card above; the cards are written there.\n" +
+                    "2. Get a key: for Gemini, open aistudio.google.com in a browser, sign in, tap Get API key, create one, copy it.\n" +
+                    "3. Leave Gemini selected and the model as gemini-2.5-flash, then paste your key above.\n" +
+                    "4. Turn on Write cards automatically and set the card time (9 pm is a good default).\n" +
+                    "5. Tap Write today's card now to test; the result line tells you what happened.\n" +
+                    "The card then shows up in the Daily reflection card, exactly like the cards written for you tonight. " +
+                    "The OpenAI-compatible option is for any other AI service that offers that standard API (OpenAI, Groq, OpenRouter, local servers).",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+fun aiHourText(h: Int): String = when {
+    h == 0 -> "12 am"
+    h < 12 -> "$h am"
+    h == 12 -> "12 pm"
+    else -> "${h - 12} pm"
 }
 
 @Composable
