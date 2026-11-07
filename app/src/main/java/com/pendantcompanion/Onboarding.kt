@@ -69,7 +69,7 @@ fun SetupWizard(vm: PendantViewModel) {
         if (ok.values.any { it }) { vm.startScan(); step = Step.CONNECT }
     }
     val micPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) { micSecs = 0; micOn = true; recorder.start() }
+        if (ok) { micSecs = 0; micOn = recorder.start() }
     }
     val pickWhisper = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.importModel(uri)
@@ -111,21 +111,33 @@ fun SetupWizard(vm: PendantViewModel) {
         }
     }
 
-    // A transcript model becomes ready -> start the first batch.
-    LaunchedEffect(model, dl) {
-        if (step == Step.MODEL && model.ready && dl == null && !transKicked) {
-            transKicked = true
-            vm.transcribeAllSessions(onlyNew = true)
-            batchStartAt = System.currentTimeMillis()
+    // The transcription stage: entering it kicks the batch if nothing is
+    // running, and the step moves on when the batch finishes or when there is
+    // nothing new to transcribe (the batch never starts then).
+    LaunchedEffect(step, model, dl, batch) {
+        if (step == Step.MODEL && model.ready && dl == null) {
             step = Step.TRANSCRIBE
         }
-    }
-
-    // Batch done -> the voice step.
-    LaunchedEffect(batch) {
-        val b = batch ?: return@LaunchedEffect
-        if (batchStartAt == 0L) batchStartAt = System.currentTimeMillis()
-        if (step == Step.TRANSCRIBE && b.note == "finished") step = Step.VOICE
+        if (step != Step.TRANSCRIBE) return@LaunchedEffect
+        if (!transKicked && batch == null) {
+            transKicked = true
+            vm.transcribeAllSessions(onlyNew = true)
+            if (batchStartAt == 0L) batchStartAt = System.currentTimeMillis()
+        }
+        var quiet = 0
+        while (step == Step.TRANSCRIBE) {
+            delay(1000)
+            val b = vm.batch.value
+            if (b != null) {
+                quiet = 0
+                if (b.note == "finished") { step = Step.VOICE; return@LaunchedEffect }
+            } else {
+                quiet++
+                // A running batch sets its state within a few seconds; if the
+                // batch stays null the onlyNew filter found nothing to do.
+                if (quiet >= 6) { step = Step.VOICE; return@LaunchedEffect }
+            }
+        }
     }
 
     // Mic recording loop with a live level meter and a 30 s cap.

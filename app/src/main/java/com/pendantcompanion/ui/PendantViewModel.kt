@@ -180,13 +180,22 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 conn.disconnect()
-                if (dst.exists()) dst.delete()
+                if (dst.length() < 10_000_000) {
+                    dst.delete()
+                    throw IllegalStateException("the download came up short (${dst.length()} bytes); try again or pick a file manually")
+                }
                 if (!tmp.renameTo(dst)) throw IllegalStateException("could not move the downloaded model into place")
                 if (prefs.getString("whisper_model_path", null) == null) {
                     prefs.edit().putString("whisper_model_path", dst.absolutePath).commit()
                 }
-                _model.value = ModelInfo(dst.absolutePath, dst.length(), _model.value.ready)
+                // Validate the download the same way the file-picker path does,
+                // so the guided flow sees ready=true and moves on.
+                val h = WhisperBridge.nativeInit(dst.absolutePath)
+                val ok = h != 0L
+                if (ok) WhisperBridge.nativeFree(h)
+                _model.value = ModelInfo(dst.absolutePath, dst.length(), ok)
                 _modelDownload.value = null
+                if (!ok) throw IllegalStateException("Whisper did not load the downloaded model")
             } catch (e: Exception) {
                 _modelDownload.value = null
                 _trans.value = TransState.TransError(-1,
