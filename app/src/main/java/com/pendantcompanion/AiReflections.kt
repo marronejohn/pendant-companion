@@ -31,6 +31,7 @@ import java.util.Locale
 object ReflectionAi {
     const val PREFS = "pendant_prefs"
     const val ACTION_RUN = "com.pendantcompanion.AI_REFLECTION_RUN"
+    const val ACTION_RUN_BATCH = "com.pendantcompanion.AI_REFLECTION_BATCH"
 
     private const val CHARS_PER_CALL = 90_000
 
@@ -71,10 +72,29 @@ object ReflectionAi {
         (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
             .setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pi)
         p.edit().putLong("ai_next_fire", cal.timeInMillis).apply()
+        try { armBatch(context) } catch (_: Exception) {}
+    }
+
+    /** Arms the overnight review alarm (3 am) that writes the weekly, monthly,
+     *  quarterly, half-yearly and yearly cards when one is due. */
+    fun armBatch(context: Context) {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!enabled(p)) return
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 3); set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }
+        if (!cal.after(Calendar.getInstance())) cal.add(Calendar.DAY_OF_YEAR, 1)
+        val pi = PendingIntent.getBroadcast(
+            context, 9402, Intent(context, AiReflectionBatchReceiver::class.java).setAction(ACTION_RUN_BATCH),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
+            .setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pi)
     }
 
     /** Generates every card due right now. manual=true forces today's daily card to be rewritten. */
-    fun generateDue(context: Context, manual: Boolean): String {
+    fun generateDue(context: Context, manual: Boolean, daily: Boolean = true): String {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (!enabled(p)) return "Daily insights is off or not fully set up yet."
         val out = StringBuilder()
@@ -88,8 +108,9 @@ object ReflectionAi {
             val t = folder
             val cr = t.cr
 
-            // Daily card: always due, once per day unless forced.
             val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+            if (daily) {
+            // Daily card: always due, once per day unless forced.
             val dailyName = "reflection_$today.json"
             val haveDaily = fileExists(cr, t.treeUri, t.docId, dailyName)
             if (manual || !haveDaily) {
@@ -110,6 +131,7 @@ object ReflectionAi {
                 }
             } else out.append("Today's daily card is already written")
 
+            }
             // Review layers due today, skipped when already written.
             for (due in dueLayers()) {
                 val name = "review_${due.layer}_${due.period}.json"
@@ -131,6 +153,21 @@ object ReflectionAi {
         val line = if (out.isEmpty()) "Nothing new to write." else out.toString()
         p.edit().putString("ai_last_result", stamp() + " " + line).apply()
         return line
+    }
+
+    /** After new material lands late in the day, write today's daily card
+     *  straight away instead of leaving the user waiting for the alarm. */
+    fun maybeCatchUp(context: Context) {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!enabled(p)) return
+        if (Calendar.getInstance().get(Calendar.HOUR_OF_DAY) < hour(p)) return
+        try {
+            val t = writeTarget(context) ?: return
+            val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+            if (!fileExists(t.cr, t.treeUri, t.docId, "reflection_" + today + ".json")) {
+                generateDue(context, manual = false)
+            }
+        } catch (_: Exception) {}
     }
 
     private fun stamp(): String =
@@ -399,5 +436,16 @@ class AiReflectionReceiver : BroadcastReceiver() {
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) ReflectionAi.armNext(context)
+    }
+}
+
+/** Fires at 3 am; writes any review-layer card due that day, never the daily card. */
+class AiReflectionBatchReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val pend = goAsync()
+        Thread {
+            try { ReflectionAi.generateDue(context, manual = false, daily = false) } catch (_: Exception) {}
+            try { ReflectionAi.armBatch(context) } finally { pend.finish() }
+        }.start()
     }
 }

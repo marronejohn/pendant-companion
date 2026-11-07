@@ -188,6 +188,12 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
 
+    val setupDone by vm.setupDone.collectAsState()
+    if (!setupDone) {
+        SetupWizard(vm)
+        return
+    }
+
     val needed = if (Build.VERSION.SDK_INT >= 31)
         arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
     else
@@ -1038,7 +1044,12 @@ fun AiCard(vm: PendantViewModel) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Service", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 Button(onClick = { vm.setAiProvider("gemini") }, enabled = provider != "gemini") { Text("Gemini") }
-                Button(onClick = { vm.setAiProvider("openai") }, enabled = provider != "openai") { Text("OpenAI-compatible") }
+                Button(onClick = { vm.setAiProvider("openai"); vm.setAiBaseUrl("https://api.groq.com/openai/v1"); vm.setAiModel("openai/gpt-oss-120b") },
+                       enabled = provider != "openai" || baseUrl != "https://api.groq.com/openai/v1") { Text("Groq") }
+                Button(onClick = { vm.setAiProvider("openai"); vm.setAiBaseUrl("https://openrouter.ai/api/v1"); vm.setAiModel("openai/gpt-oss-120b") },
+                       enabled = provider != "openai" || baseUrl != "https://openrouter.ai/api/v1") { Text("OpenRouter") }
+                Button(onClick = { vm.setAiProvider("openai") },
+                       enabled = provider != "openai" || (baseUrl != "https://api.groq.com/openai/v1" && baseUrl != "https://openrouter.ai/api/v1")) { Text("Other") }
             }
             OutlinedTextField(
                 value = key, onValueChange = { vm.setAiKey(it) },
@@ -1075,7 +1086,7 @@ fun AiCard(vm: PendantViewModel) {
                     "4. Turn on Write cards automatically and set the card time (9 pm is a good default).\n" +
                     "5. Tap Write today's card now to test; the result line tells you what happened.\n" +
                     "The card then shows up in the Daily reflection card, exactly like the cards written for you tonight. " +
-                    "The OpenAI-compatible option is for any other AI service that offers that standard API (OpenAI, Groq, OpenRouter, local servers).",
+                    "Groq and OpenRouter give out free keys with no credit card (console.groq.com/keys and openrouter.ai/keys); Other is for any service with that standard API.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }

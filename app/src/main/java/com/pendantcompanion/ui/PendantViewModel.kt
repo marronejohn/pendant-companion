@@ -141,6 +141,115 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("auto_transcribe", on).apply()
     }
 
+
+    // ----- Guided setup (public edition) -----
+
+    private val _setupDone = MutableStateFlow(prefs.getBoolean("setup_done", false))
+    val setupDone: StateFlow<Boolean> = _setupDone
+    fun finishSetup() {
+        prefs.edit().putBoolean("setup_done", true).apply()
+        _setupDone.value = true
+    }
+
+    /** (label, bytes so far, total bytes) while a Whisper model downloads. */
+    private val _modelDownload = MutableStateFlow<Triple<String, Long, Long>?>(null)
+    val modelDownload: StateFlow<Triple<String, Long, Long>?> = _modelDownload
+
+    /** Downloads a Whisper ggml model into the app's default model path. */
+    fun downloadWhisperModel(url: String, label: String) {
+        transJob = scope.launch(Dispatchers.IO) {
+            try {
+                val dir = java.io.File(getApplication<Application>().filesDir, "whisper").apply { mkdirs() }
+                val dst = java.io.File(dir, "model.bin")
+                val tmp = java.io.File(dir, "model.bin.part")
+                val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 30_000
+                conn.instanceFollowRedirects = true
+                val total = conn.contentLengthLong
+                conn.inputStream.use { ins ->
+                    tmp.outputStream().use { out ->
+                        val buf = ByteArray(1 shl 16)
+                        var got = 0L
+                        while (true) {
+                            val n = ins.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            got += n
+                            _modelDownload.value = Triple(label, got, if (total > 0) total else 0L)
+                        }
+                    }
+                }
+                conn.disconnect()
+                if (dst.exists()) dst.delete()
+                if (!tmp.renameTo(dst)) throw IllegalStateException("could not move the downloaded model into place")
+                if (prefs.getString("whisper_model_path", null) == null) {
+                    prefs.edit().putString("whisper_model_path", dst.absolutePath).commit()
+                }
+                _model.value = ModelInfo(dst.absolutePath, dst.length(), _model.value.ready)
+                _modelDownload.value = null
+            } catch (e: Exception) {
+                _modelDownload.value = null
+                _trans.value = TransState.TransError(-1,
+                    "Download failed: ${e.message ?: e.javaClass.simpleName}. You can also pick the model file manually.")
+            }
+        }
+    }
+
+    /** Voiceprint from a live in-app recording (guided setup). Keys are negative. */
+    fun enrollFromMic(samples: FloatArray, slot: Int) {
+        if (!_speaker.value.loaded) { _speakerNote.value = "Load the voice model file first."; return }
+        if (speakerJob?.isActive == true) { _speakerNote.value = "Another voice job is running; try again in a moment."; return }
+        val key = -slot
+        speakerStop = false
+        _speaker.value = _speaker.value.copy(enrolled = (speakerVecs.keys + key).sorted())
+        speakerJob = scope.launch(Dispatchers.IO) {
+            try {
+                _speakerNote.value = "Building your voiceprint from the recording\u2026"
+                val v = embedWindows(samples, maxWindows = 40)
+                    ?: throw IllegalStateException("Not enough clear speech in that recording. Try again, talking a little more.")
+                speakerVecs[key] = v
+                writeFloats(java.io.File(speakerDir(), "vec_" + key + ".bin"), v)
+                recomputeCentroid()
+                val keys = speakerVecs.keys.sorted()
+                prefs.edit().putString("speaker_enrolled", keys.joinToString(",")).apply()
+                _speaker.value = _speaker.value.copy(enrolled = keys)
+                _speakerNote.value = "Voiceprint updated from your recording."
+                scoreSessions()
+            } catch (e: Exception) {
+                speakerVecs.remove(key)
+                java.io.File(speakerDir(), "vec_" + key + ".bin").delete()
+                recomputeCentroid()
+                _speaker.value = _speaker.value.copy(enrolled = speakerVecs.keys.sorted())
+                _speakerNote.value = e.message ?: e.javaClass.simpleName
+            }
+        }
+    }
+
+    /** Auto chain after an automatic sync: transcribe only what is new, then
+     *  write today's AI card if it is due and still missing. */
+    fun autoPipelineAfterSync() {
+        scope.launch(Dispatchers.Default) {
+            try {
+                if (!_autoTranscribe.value) return@launch
+                if (_sessions.value.none { it.frames > 0 }) return@launch
+                refreshSessions()
+                if (_sessions.value.none { s -> s.frames > 0 && !transcriptFile(s.session).exists() }) {
+                    ReflectionAi.maybeCatchUp(getApplication())
+                    return@launch
+                }
+                transcribeAllSessions(onlyNew = true)
+                val deadline = System.currentTimeMillis() + 6L * 60 * 60 * 1000
+                while (System.currentTimeMillis() < deadline) {
+                    kotlinx.coroutines.delay(5_000)
+                    val st = BatchRunner.state.value
+                    val ts = _trans.value
+                    if (st == null || st.note == "finished" || ts is TransState.TransError) break
+                }
+                ReflectionAi.maybeCatchUp(getApplication())
+            } catch (_: Exception) {}
+        }
+    }
+
     private val _driveFolder = MutableStateFlow(prefs.getString("drive_tree_uri", null))
     val driveFolder: StateFlow<String?> = _driveFolder
     private val _driveFolderInfo = MutableStateFlow(prefs.getString("drive_folder_info", "") ?: "")
@@ -1036,10 +1145,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true, note)
                 if (autoTranscribe.value && !clearAllInProgress && (pages > 0 || skipped > 0)) {
-                    scope.launch(Dispatchers.Default) {
-                        refreshSessions()
-                        transcribeAllSessions()
-                    }
+                    autoPipelineAfterSync()
                 }
             } catch (e: Exception) {
                 try { s.stopBatchDownload() } catch (_: Exception) {}
@@ -1882,7 +1988,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     val batch: StateFlow<BatchProgress?> = BatchRunner.state
 
-    fun transcribeAllSessions() {
+    fun transcribeAllSessions(onlyNew: Boolean = false) {
         if (BatchRunner.job?.isActive == true) return
         val app = getApplication<Application>()
         // No previous batch running but a stale progress line left over? Clear it.
@@ -1891,6 +1997,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         // start a batch (and its foreground service) against an empty list:
         // that used to park the notification at "0 of 0 (starting batch...)".
         if (_sessions.value.none { it.frames > 0 }) {
+            if (onlyNew) return
             _trans.value = TransState.TransError(-1,
                 "Nothing to transcribe yet: the recordings list is empty. Connect and sync the pendant first, then run the batch again.")
             return
@@ -1898,11 +2005,11 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         BatchRunner.state.value = BatchProgress(0, 0, -1, 0, "starting batch...")
         BatchRunner.job = BatchRunner.scope.launch {
             try { TranscribeService.start(app) } catch (_: Exception) {}
-            runBatch()
+            runBatch(onlyNew)
         }
     }
 
-    private suspend fun runBatch() {
+    private suspend fun runBatch(onlyNew: Boolean = false) {
         try {
             val mf = modelFile()
             if (!mf.exists() || mf.length() < 10_000_000) {
@@ -1918,9 +2025,15 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             val perWorker = maxOf(2, cores / workers)
             val minSec = _minSessionSec.value
             val targets = _sessions.value
-                .filter { it.frames > 0 && !shortSession(it, minSec) }
+                .filter { it.frames > 0 && !shortSession(it, minSec) &&
+                    (!onlyNew || !transcriptFile(it.session).exists()) }
                 .sortedBy { it.session }
             if (targets.isEmpty()) {
+                if (onlyNew) {
+                    BatchRunner.state.value = null
+                    try { TranscribeService.stop(getApplication()) } catch (_: Exception) {}
+                    return
+                }
                 _trans.value = TransState.TransError(-1,
                     "Nothing to transcribe yet: the recordings list is empty. Sync the pendant first.")
                 BatchRunner.state.value = null
