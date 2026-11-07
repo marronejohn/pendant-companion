@@ -111,6 +111,12 @@ fun SetupWizard(vm: PendantViewModel) {
         }
     }
 
+    // A model already downloaded on a previous run is validated on entry,
+    // so returning users skip the download step automatically.
+    LaunchedEffect(step) {
+        if (step == Step.MODEL) vm.ensureModelValidated()
+    }
+
     // The transcription stage: entering it kicks the batch if nothing is
     // running, and the step moves on when the batch finishes or when there is
     // nothing new to transcribe (the batch never starts then).

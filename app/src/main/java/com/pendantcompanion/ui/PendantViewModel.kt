@@ -184,6 +184,9 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     dst.delete()
                     throw IllegalStateException("the download came up short (${dst.length()} bytes); try again or pick a file manually")
                 }
+                // renameTo fails when the destination already exists, which is
+                // exactly the returning-user case: drop the old model first.
+                if (dst.exists()) dst.delete()
                 if (!tmp.renameTo(dst)) throw IllegalStateException("could not move the downloaded model into place")
                 if (prefs.getString("whisper_model_path", null) == null) {
                     prefs.edit().putString("whisper_model_path", dst.absolutePath).commit()
@@ -201,6 +204,23 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 _trans.value = TransState.TransError(-1,
                     "Download failed: ${e.message ?: e.javaClass.simpleName}. You can also pick the model file manually.")
             }
+        }
+    }
+
+    /** Marks a Whisper model already on the phone as ready (validation load),
+     *  so the guided setup skips the download step for returning users. */
+    fun ensureModelValidated() {
+        if (_model.value.ready) return
+        if (transJob?.isActive == true) return
+        val f = modelFile()
+        if (!f.exists() || f.length() < 10_000_000) return
+        transJob = scope.launch(Dispatchers.IO) {
+            try {
+                val h = WhisperBridge.nativeInit(f.absolutePath)
+                val ok = h != 0L
+                if (ok) WhisperBridge.nativeFree(h)
+                _model.value = ModelInfo(f.absolutePath, f.length(), ok)
+            } catch (_: Exception) {}
         }
     }
 
