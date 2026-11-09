@@ -2152,6 +2152,11 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             BatchRunner.state.value = BatchProgress(0, 0, -1, 0,
                 "batch failed: ${e.message?.take(90) ?: e.javaClass.simpleName}")
             _trans.value = TransState.TransError(-1, "Batch transcription failed: ${e.message ?: e.javaClass.simpleName}")
+            // Show the failure, then clear it so nothing waits on it forever.
+            kotlinx.coroutines.delay(30_000)
+            if (BatchRunner.state.value?.note?.startsWith("batch failed") == true) {
+                BatchRunner.state.value = null
+            }
         }
         TranscribeService.stop(getApplication())
     }

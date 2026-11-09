@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
@@ -62,11 +63,20 @@ fun SetupWizard(vm: PendantViewModel) {
     var micLevel by remember { mutableStateOf(0f) }
     val recorder = remember { MicRecorder() }
 
+    // Status trail: the last few internal events, shown in small print at the
+    // bottom of every step, so a stuck screen says exactly where it stopped.
+    val trail = remember { mutableStateListOf<String>() }
+    fun wlog(msg: String) {
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        trail.add(0, "$ts $msg")
+        if (trail.size > 6) trail.removeAt(trail.lastIndex)
+    }
+
     val needed = if (Build.VERSION.SDK_INT >= 31)
         arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
     else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
     val perms = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { ok ->
-        if (ok.values.any { it }) { vm.startScan(); step = Step.CONNECT }
+        if (ok.values.any { it }) { wlog("permissions ok"); vm.startScan(); step = Step.CONNECT }
     }
     val micPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) { micSecs = 0; micOn = recorder.start() }
@@ -85,6 +95,7 @@ fun SetupWizard(vm: PendantViewModel) {
     LaunchedEffect(state) {
         val st = state
         if (st is State.Connected && step == Step.CONNECT) {
+            wlog("pendant connected")
             if (!vm.autoSync.value) vm.syncReadOnly()
             syncStartAt = 0L
             syncEta = null
@@ -107,6 +118,7 @@ fun SetupWizard(vm: PendantViewModel) {
                     "about ${kotlin.math.ceil(remaining / rate).toInt()} min left" else null
             }
         } else {
+            wlog("sync finished: ${sp.pagesSaved} pages")
             step = if (model.ready) Step.TRANSCRIBE else Step.MODEL
         }
     }
@@ -115,6 +127,23 @@ fun SetupWizard(vm: PendantViewModel) {
     // so returning users skip the download step automatically.
     LaunchedEffect(step) {
         if (step == Step.MODEL) vm.ensureModelValidated()
+    }
+
+    LaunchedEffect(step) { wlog("step ${step.name}") }
+
+    LaunchedEffect(model) {
+        if (model.ready) wlog("model ready, validated ok")
+    }
+
+    LaunchedEffect(trans) {
+        val te = trans
+        if (te is TransState.TransError) wlog("error: ${te.message.take(70)}")
+    }
+
+    LaunchedEffect(batch) {
+        val b = batch
+        if (b != null && (b.note == "finished" || b.note.startsWith("batch failed") || b.note.startsWith("starting")))
+            wlog("batch: ${b.note.take(50)} (${b.done}/${b.total})")
     }
 
     // The transcription stage: entering it kicks the batch if nothing is
@@ -137,6 +166,7 @@ fun SetupWizard(vm: PendantViewModel) {
             if (b != null) {
                 quiet = 0
                 if (b.note == "finished") { step = Step.VOICE; return@LaunchedEffect }
+                if (b.note.startsWith("batch failed")) return@LaunchedEffect
             } else {
                 quiet++
                 // A running batch sets its state within a few seconds; if the
@@ -235,10 +265,10 @@ fun SetupWizard(vm: PendantViewModel) {
                     if (total > 0) LinearProgressIndicator(got.toFloat() / total, Modifier.fillMaxWidth())
                 } else {
                     Text("The app needs a speech model. Download it once (about 45 to 60 MB), or pick a file you already have.")
-                    Button(onClick = { vm.downloadWhisperModel(
+                    Button(onClick = { wlog("download tapped"); vm.downloadWhisperModel(
                         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q8_0.bin",
                         "tiny.en (~43 MB, fastest)") }) { Text("Download the fast model (~43 MB)") }
-                    Button(onClick = { vm.downloadWhisperModel(
+                    Button(onClick = { wlog("download tapped"); vm.downloadWhisperModel(
                         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin",
                         "base.en (~60 MB, more accurate)") }) { Text("Download the better model (~60 MB)") }
                     OutlinedButton(onClick = { pickWhisper.launch(arrayOf("*/*")) }) { Text("Pick a model file instead") }
@@ -267,6 +297,9 @@ fun SetupWizard(vm: PendantViewModel) {
                 } else Text("Preparing...")
                 val te = trans as? TransState.TransError
                 te?.let { Text(it.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                if (te != null) {
+                    OutlinedButton(onClick = { transKicked = false; vm.transcribeAllSessions(onlyNew = true) }) { Text("Try again") }
+                }
                 OutlinedButton(onClick = { step = Step.VOICE }) { Text("Continue") }
             }
 
@@ -357,6 +390,12 @@ fun SetupWizard(vm: PendantViewModel) {
                     "Everything is in the cards folder you picked.")
                 Button(onClick = { vm.finishSetup() }) { Text("Open the app") }
             }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("status", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        trail.forEach { t ->
+            Text(t, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(20.dp))
     }
