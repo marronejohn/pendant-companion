@@ -190,7 +190,7 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
 
     val setupDone by vm.setupDone.collectAsState()
     if (!setupDone) {
-        SetupWizard(vm)
+        FirstRunScreen(vm)
         return
     }
 
@@ -265,6 +265,11 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
             is Connecting -> CircularProgressIndicator()
             is Connected -> DeviceInfoCard(s, vm, onDisconnect = { vm.disconnect() })
         }
+
+        Spacer(Modifier.height(24.dp))
+        Text("Advanced", style = MaterialTheme.typography.labelSmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        TextButton(onClick = { vm.rerunSetup() }) { Text("Run full setup again") }
     }
 }
 

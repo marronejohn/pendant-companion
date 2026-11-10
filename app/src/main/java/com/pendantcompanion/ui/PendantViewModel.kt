@@ -151,6 +151,12 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         _setupDone.value = true
     }
 
+    /** Advanced: show the first run again without touching any user data. */
+    fun rerunSetup() {
+        prefs.edit().putBoolean("setup_done", false).commit()
+        _setupDone.value = false
+    }
+
     /** (label, bytes so far, total bytes) while a Whisper model downloads. */
     private val _modelDownload = MutableStateFlow<Triple<String, Long, Long>?>(null)
     val modelDownload: StateFlow<Triple<String, Long, Long>?> = _modelDownload

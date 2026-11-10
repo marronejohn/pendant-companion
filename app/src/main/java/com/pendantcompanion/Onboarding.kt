@@ -1,6 +1,8 @@
 package com.pendantcompanion
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.content.Intent
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -8,13 +10,21 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.text.KeyboardOptions
@@ -25,8 +35,163 @@ import com.pendantcompanion.ui.PendantViewModel
 import com.pendantcompanion.ui.PendantViewModel.State
 import com.pendantcompanion.ui.PendantViewModel.TransState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 private enum class Step { WELCOME, CONNECT, SYNC, MODEL, TRANSCRIBE, VOICE, INSIGHTS, FINISH }
+
+/** The v0.14 first run: one screen, one button. Everything the old wizard did
+ *  still happens, but silently afterwards; nothing here blocks on it. */
+private enum class FrPhase { START, SCANNING, NOT_FOUND }
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+fun FirstRunScreen(vm: PendantViewModel) {
+    val state by vm.state.collectAsState()
+    val btOn by vm.btOn.collectAsState()
+
+    var phase by remember { mutableStateOf(FrPhase.START) }
+    var showSupport by remember { mutableStateOf(false) }
+    var showTrail by remember { mutableStateOf(false) }
+    var pairingAttempted by remember { mutableStateOf(false) }
+    var lastEventAt by remember { mutableStateOf(0L) }
+    val trail = remember { mutableStateListOf<String>() }
+    fun wlog(msg: String) {
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        trail.add(0, "$ts $msg")
+        if (trail.size > 6) trail.removeAt(trail.lastIndex)
+        lastEventAt = System.currentTimeMillis()
+    }
+    LaunchedEffect(Unit) { wlog("first run open, v0.14.0") }
+
+    val perms = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { ok ->
+        val btGranted = ok.entries.any {
+            (it.key == Manifest.permission.BLUETOOTH_SCAN ||
+                it.key == Manifest.permission.BLUETOOTH_CONNECT ||
+                it.key == Manifest.permission.ACCESS_FINE_LOCATION) && it.value
+        }
+        if (btGranted) {
+            wlog("permissions ok")
+            vm.startScan()
+            phase = FrPhase.SCANNING
+        } else {
+            wlog("permission denied")
+        }
+    }
+    val enableBt = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
+    LaunchedEffect(btOn, phase) {
+        if (phase == FrPhase.SCANNING && !btOn) {
+            wlog("asking to turn Bluetooth on")
+            try { enableBt.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) } catch (_: Exception) {}
+        }
+    }
+
+    // One button then hands off: auto-pair the best scan hit, and once the
+    // pendant is connected the first run is over.
+    LaunchedEffect(state) {
+        when (val st = state) {
+            is State.ScanResults -> {
+                if (!pairingAttempted && st.hits.isNotEmpty() &&
+                    (phase == FrPhase.SCANNING || phase == FrPhase.NOT_FOUND)) {
+                    pairingAttempted = true
+                    val best = st.hits.maxByOrNull { it.rssi } ?: st.hits.first()
+                    wlog("pendant seen (${best.name ?: best.device.address}), pairing")
+                    vm.pairAndConnect(best)
+                }
+            }
+            is State.Connected -> {
+                wlog("pendant connected")
+                vm.finishSetup()
+            }
+            else -> {}
+        }
+    }
+
+    // No progress for 20 s: say so plainly, and let the screen diagnose itself.
+    LaunchedEffect(phase) {
+        while (isActive) {
+            delay(1000)
+            if (phase == FrPhase.SCANNING &&
+                System.currentTimeMillis() - lastEventAt >= 20_000) {
+                wlog("no pendant found in 20 s")
+                phase = FrPhase.NOT_FOUND
+                showTrail = true
+            }
+        }
+    }
+
+    val ink = MaterialTheme.colorScheme.primary
+    Column(
+        Modifier.fillMaxSize().padding(28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Canvas(Modifier.size(110.dp)) {
+            val w = size.width; val h = size.height
+            drawCircle(ink, radius = h * 0.10f, center = Offset(w / 2f, h * 0.16f),
+                style = Stroke(width = h * 0.045f))
+            drawCircle(ink, radius = h * 0.32f, center = Offset(w / 2f, h * 0.62f))
+        }
+        Spacer(Modifier.height(18.dp))
+        Text(
+            "Pendant Companion",
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.pointerInput(Unit) { detectTapGestures(onLongPress = { showSupport = true }) },
+        )
+        Spacer(Modifier.height(10.dp))
+        when (phase) {
+            FrPhase.START -> {
+                Text("Wear your pendant and keep it close. One tap and I'll take it from there.",
+                     textAlign = TextAlign.Center)
+                Spacer(Modifier.height(18.dp))
+                Button(onClick = {
+                    wlog("find tapped")
+                    val wanted = buildList {
+                        if (Build.VERSION.SDK_INT >= 31) {
+                            add(Manifest.permission.BLUETOOTH_SCAN)
+                            add(Manifest.permission.BLUETOOTH_CONNECT)
+                        } else add(Manifest.permission.ACCESS_FINE_LOCATION)
+                        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+                    }.toTypedArray()
+                    pairingAttempted = false
+                    perms.launch(wanted)
+                }) { Text("Find my pendant") }
+            }
+            FrPhase.SCANNING -> {
+                CircularProgressIndicator()
+                Spacer(Modifier.height(12.dp))
+                Text("Looking for your pendant...")
+                if (!btOn) Text("Turn Bluetooth on when the phone asks.",
+                                style = MaterialTheme.typography.bodySmall)
+            }
+            FrPhase.NOT_FOUND -> {
+                Text("Couldn't find your pendant yet.")
+                Spacer(Modifier.height(6.dp))
+                Text("Wake it by pressing its button, and keep it within a metre.",
+                     style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(14.dp))
+                Button(onClick = {
+                    wlog("try again")
+                    pairingAttempted = false
+                    vm.startScan()
+                    phase = FrPhase.SCANNING
+                }) { Text("Try again") }
+            }
+        }
+        if (showSupport || showTrail) {
+            Spacer(Modifier.height(20.dp))
+            Text("Support info", style = MaterialTheme.typography.labelSmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            trail.forEach { t ->
+                Text(t, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            val clip = LocalClipboardManager.current
+            TextButton(onClick = { clip.setText(AnnotatedString("v0.14.0\n" + trail.joinToString("\n"))) }) {
+                Text("Copy")
+            }
+        }
+    }
+}
 
 /** The public-edition first-run flow: find and connect the pendant, copy the
  *  recordings, transcribe them, teach the app the user's voice, set up the
