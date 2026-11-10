@@ -1,4 +1,4 @@
-# Continuing development of Pendant Companion (latest version: v0.13.40)
+# Continuing development of Pendant Companion (latest version: v0.14.1)
 
 You are picking up an existing, working Android app. Read this brief in full before changing anything, and keep every locked decision below intact.
 
@@ -9,7 +9,7 @@ Pendant Companion (package `com.pendantcompanion`) is a privacy-first Android co
 - Kotlin + Jetpack Compose, single module. minSdk 26, target/compileSdk 35, arm64-v8a only, NDK 27.2.12479018, Java 17, Gradle 8.9. Debug-signed APKs.
 - Private repo: github.com/marronejohn/pendant-companion (branch `main`, commits as "the project author" / ).
 - The release APK must stay under ~20 MB (it is delivered via Google Drive), so jniLibs use `useLegacyPackaging` and native libs are stripped carefully.
-- Version history lives in `app/build.gradle.kts` (current: versionCode 28, versionName "0.13.40").
+- Version history lives in `app/build.gradle.kts` (current: versionCode 30, versionName "0.14.1").
 
 ## Core pipeline
 1. **BLE sync**: direct flash-drain from the pendant, non-destructive by default (the pendant's own copy is never touched). Protocol references to verify against: github.com/MAkcanca/pendant-cli and github.com/aldrinjenson/pendant-sync (tested against pendant firmware v1.1.20).
@@ -25,7 +25,7 @@ First-run flow, shown once (`setup_done` pref): WELCOME (permissions) -> CONNECT
 As of v0.13.40 the wizard renders a **status trail**: the last six timestamped internal events (version tag, permissions, connected, sync finished, model validated, download tapped, batch state, errors) in small monospace at the bottom of every step, so a stuck screen diagnoses itself from a screenshot.
 
 ## Current state and open work
-- v0.13.40 (commit 1550397) is the latest build. The user was testing the wizard and reported it jamming at "step 3 of 5" (the model download / transcription steps) on 0.13.37-0.13.39; fixes shipped for the ready-flag validation (0.13.38), rename-over-existing model (0.13.39) and a batch-failure wedge plus the status trail (0.13.40). The next report from the user should be read against the status trail before changing code.
+- v0.13.40 (commit 1550397) shipped the wizard status trail. After that: v0.14.0 (commit cdfc503) briefly replaced the wizard with a one-screen first run; the user asked for the wizard back. v0.14.1 (commit a93350b, versionCode 30) is the latest build: the wizard is the first-run screen again, and the long-standing voice bug is fixed - enrollFromMic called the busy-guarded scoreSessions() from inside the still-active enroll job, so mic-enrolled voiceprints never scored any session; it now calls rescoreAfterEnrollChange(), and unenrollSession clears displayed scores when no enrollment remains. The next release ladder (Setup Doctor, Home 3-state, local Day recap, one-tap AI, voice auto-learn, speed pass) is specified in docs/v0.14-brief.md; flagged decisions NOT to build without the user: hosted AI insights, bundled on-device LLM.
 - Known open bug: after "Clear enrollment", voice scores stay at 0% until a working re-enrollment path runs; the wizard's `enrollFromMic` path (negative embedding keys `vec_-1.bin`) is the intended fix, still needs device validation.
 - The app is offline except the AI feature. Existing user data (model file, enrollment, transcripts) must survive every upgrade: the wizard treats already-done steps as done and shows itself only once.
 
