@@ -190,7 +190,7 @@ fun PendantApp(vm: PendantViewModel = viewModel()) {
 
     val setupDone by vm.setupDone.collectAsState()
     if (!setupDone) {
-        FirstRunScreen(vm)
+        SetupWizard(vm)
         return
     }
 

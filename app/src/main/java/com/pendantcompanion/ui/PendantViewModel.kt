@@ -249,7 +249,9 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 prefs.edit().putString("speaker_enrolled", keys.joinToString(",")).apply()
                 _speaker.value = _speaker.value.copy(enrolled = keys)
                 _speakerNote.value = "Voiceprint updated from your recording."
-                scoreSessions()
+                // The enroll job is still active, so the guarded scoreSessions()
+                // would return immediately; score without the guard instead.
+                rescoreAfterEnrollChange()
             } catch (e: Exception) {
                 speakerVecs.remove(key)
                 java.io.File(speakerDir(), "vec_" + key + ".bin").delete()
@@ -581,7 +583,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             .putString("speaker_enrolled", if (enrolled.isEmpty()) null else enrolled.joinToString(","))
             .apply()
         _speaker.value = _speaker.value.copy(enrolled = enrolled)
-        _speakerScores.value = _speakerScores.value - s
+        _speakerScores.value = if (enrolled.isEmpty()) emptyMap() else _speakerScores.value - s
         _speakerNote.value = if (enrolled.isEmpty())
             "Removed your voice from session $s. No sessions enrolled now; tap person+ on one to enroll again."
         else
