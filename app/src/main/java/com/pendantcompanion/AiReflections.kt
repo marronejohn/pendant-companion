@@ -122,6 +122,11 @@ object ReflectionAi {
                         sessions = sessions, focus = "the day so far")
                     when (res) {
                         is Ok -> {
+                            // Names that came up go into the on-phone People register.
+                            try { PeopleRegister.mergeFromCard(context, today, res.text) } catch (_: Exception) {}
+                            // Open loops and the active experiment's nightly check come from the same card.
+                            try { LoopStore.mergeFromCard(context, today, res.text) } catch (_: Exception) {}
+                            try { ExperimentStore.recordCheckFromCard(context, today, res.text) } catch (_: Exception) {}
                             val name = if (haveDaily) replaceChild(cr, t.treeUri, t.docId, dailyName, res.text)
                                        else createChild(cr, t.treeUri, t.treeDocUri, dailyName, res.text)
                             out.append(if (name != null) "Wrote $dailyName (daily)" else "FAILED to write $dailyName")
@@ -247,30 +252,63 @@ object ReflectionAi {
         context: Context, p: android.content.SharedPreferences,
         layer: String, period: String, sessions: List<Pair<Int, String>>, focus: String,
     ): Result {
+        // When the voiceprint is current for these sessions, transcript lines
+        // are prefixed YOU / OTHER / UNSURE so the card can tell the wearer's
+        // own words apart from everyone else's.
+        val labelledTexts = sessions.map { (s, t) ->
+            val lab = if (SpeakerLabeler.usable(context)) SpeakerLabeler.label(context, s) else null
+            Triple(s, lab ?: t, lab != null)
+        }
+        val labelled = labelledTexts.isNotEmpty() && labelledTexts.all { it.third }
         val sb = StringBuilder()
         sb.append("You write the $layer reflection card for someone who wears a pendant recorder. It covers $focus (period label: $period).\n\n")
         sb.append("Rules:\n")
         sb.append("- Ground every claim in the transcripts below and cite the session number, e.g. (session-920).\n")
-        sb.append("- Prefix facts you can see with OBSERVED:. Keep interpretation clearly interpretive. Note what is UNKNOWN rather than guessing.\n")
-        sb.append("- Plain, kind, human English. No filler, no padding, no flattery. If the material is mostly ambient noise, say so honestly.\n")
+        sb.append("- Grade every list item with its evidence in square brackets: [OBSERVED, high], [OBSERVED, medium], [INTERPRETATION, low] or [HYPOTHESIS, low]. One instance is not a pattern; say so when the evidence is thin.\n")
+        if (labelled) sb.append("- Lines are prefixed YOU (the wearer), OTHER (another voice) or UNSURE. Treat YOU turns as the wearer's own words.\n")
+        sb.append("- Names, numbers and dates come from speech recognition and may be misheard; add (check) after any you are not sure of.\n")
+        sb.append("- Plain, kind, human English. No filler, no padding, no flattery. If the material is mostly ambient noise, TV or radio, say so honestly and leave the lists empty.\n")
+        sb.append("- Do not note sensitive details about other people (health, money, relationships) unless the wearer needs them to act, and never guess at private matters.\n")
+        if (layer != "daily") {
+            ExperimentStore.active(context)?.let { e ->
+                sb.append("- The app keeps this record of the wearer's current experiment (counts come from earlier daily cards, not from the transcripts below): behaviour \"${e.behaviour}\", when \"${e.trigger}\", action \"${e.action}\". ")
+                sb.append(ExperimentLogic.summaryLine(e)).append(" Mention it in the summary only if it matters, and do not restate the counts as your own finding.\n")
+            }
+        }
         sb.append("- Reply with ONLY one JSON object, no markdown fences, no commentary.\n\n")
         sb.append("The JSON must have exactly these keys:\n")
         sb.append("- kind: \"$layer\"\n")
         sb.append(if (layer == "daily") "- date: \"$period\"\n" else "- period: \"$period\"\n")
         sb.append("- summary: " + (if (layer == "daily") "2 to 4 sentences on the day" else "a paragraph on the period") + "\n")
-        sb.append("- wins: array of up to " + (if (layer == "daily") 5 else 8) + " strings, each OBSERVED with its session cite\n")
+        sb.append("- wins: array of up to " + (if (layer == "daily") 5 else 8) + " strings, each graded and cited\n")
         sb.append("- improve: array of up to 4 strings, honest and specific\n")
         sb.append("- commitments: array of up to 4 strings, things the person said they would do\n")
+        sb.append("- actions: array of things the person owes or is owed, each {\"what\": short item, \"owner\": \"you\"|\"them\"|\"unclear\", \"person\": name or \"\", \"due\": in the speaker's words or \"\", \"area\": \"work\"|\"personal\"|\"\", \"cite\": \"session-N\"}. Only things actually said.\n")
+        sb.append("- people: array of people who came up, each {\"name\": best spelling, \"relationship\": only if said aloud or \"\", \"note\": one short line or \"\", \"cite\": \"session-N\"}. Never invent a relationship.\n")
+        sb.append("- keep: array of up to 3 strings: things going well enough to keep doing, each with a cite\n")
+        if (labelled) sb.append("- communication: array of up to 3 strings, built only from YOU turns: how the wearer came across (clarity, hedging, talking over others, handling a hard moment), each with a cite and one concrete suggestion. Leave it empty if there are only a few YOU turns.\n")
+        else sb.append("- communication: leave as an empty array\n")
+        sb.append("- focus: one behaviour worth practising next, as one sentence, only if the evidence supports a real opportunity (otherwise an empty string)\n")
+        if (layer == "daily") {
+            val running = ExperimentStore.active(context)
+            if (running != null) {
+                sb.append("- experiment_check: the wearer is running this experiment: behaviour \"${running.behaviour}\", when \"${running.trigger}\", action \"${running.action}\". ")
+                sb.append("Reply with {\"result\": \"attempted\" | \"not_attempted\" | \"no_opportunity\" | \"unclear\", \"note\": one sentence, \"cite\": \"session-N\"}. ")
+                sb.append("attempted = the action is visible on a YOU turn; not_attempted = the situation clearly came up and the action is not there; no_opportunity = the situation did not come up; unclear = labels or audio make it impossible to say. A missing recording is never \"not_attempted\".\n")
+            } else {
+                sb.append("- experiment: one proposed behavioural experiment as {\"behaviour\": short name, \"trigger\": the situation it applies to, \"action\": the specific thing to do, \"success\": how it would show in a later recording}, or null when the evidence shows no real opportunity. About the wearer's own behaviour only.\n")
+            }
+        }
         sb.append("- if: one sentence describing a typical situation from this period\n")
         sb.append("- then: one sentence of practical advice for that situation\n\n")
         var total = 0
         val used = mutableListOf<Pair<Int, String>>()
-        for ((s, t) in sessions) {
+        for ((s, t, _) in labelledTexts) {
             if (total + t.length > CHARS_PER_CALL) break
             used.add(s to t); total += t.length
         }
         if (used.isEmpty()) return Err("transcripts too large to send")
-        sb.append("Transcripts (newest numbering; ${used.size} of ${sessions.size} sessions included):\n\n")
+        sb.append("Transcripts (newest numbering; ${used.size} of ${labelledTexts.size} sessions included):\n\n")
         for ((s, t) in used) {
             sb.append("--- session-$s ---\n").append(t).append("\n\n")
         }

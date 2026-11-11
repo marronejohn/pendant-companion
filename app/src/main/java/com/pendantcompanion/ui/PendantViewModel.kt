@@ -14,6 +14,13 @@ import androidx.core.content.ContextCompat
 import com.pendantcompanion.ble.PendantGattClient
 import com.pendantcompanion.TranscribeService
 import com.pendantcompanion.SpeakerVerifier
+import com.pendantcompanion.SpeakerLabeler
+import com.pendantcompanion.OtherVoices
+import com.pendantcompanion.PeopleRegister
+import com.pendantcompanion.ExperimentDraft
+import com.pendantcompanion.ExperimentLogic
+import com.pendantcompanion.ExperimentStore
+import com.pendantcompanion.LoopStore
 import com.pendantcompanion.ble.PendantScanHit
 import com.pendantcompanion.ble.PendantScanner
 import com.pendantcompanion.protocol.FlashPageParser
@@ -621,6 +628,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 var skipped = 0
                 var skippedScored = 0
                 val enrollVersion = prefs.getInt("speaker_enroll_version", 1)
+                val otherOn = OtherVoices.enabled(prefs)
                 for (si in list) {
                     if (speakerStop) return
                     // Short or empty recordings never carry enough of the wearer's
@@ -644,24 +652,40 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         val samples = wavToSamples(wav)
                         val w = 48000; val hop = 24000
                         val starts = mutableListOf<Int>(); val scores = mutableListOf<Float>()
+                        val otherIdx = ArrayList<Pair<Int, FloatArray>>()
                         var st = 0
                         while (st + w <= samples.size) {
                             var sum = 0.0
                             for (k in st until st + w step 4) { val g = samples[k]; sum += g * g }
                             if (sum / (w / 4) > 0.005 * 0.005) {
                                 val v = SpeakerVerifier.embed(samples.copyOfRange(st, st + w))
-                                if (v != null) { starts.add(st / 16000); scores.add(SpeakerVerifier.cosine(v, c)) }
+                                if (v != null) {
+                                    val sc = SpeakerVerifier.cosine(v, c)
+                                    starts.add(st / 16000); scores.add(sc)
+                                    // Voice that is clearly not the wearer feeds the
+                                    // other-voices clustering (kept on this phone).
+                                    if (otherOn && sc < thr - 0.10f) otherIdx.add(Pair(starts.size - 1, v))
+                                }
                             }
                             st += hop
                         }
                         if (scores.isEmpty()) continue
+                        val voiceIds = IntArray(scores.size)
+                        if (otherOn && otherIdx.isNotEmpty()) {
+                            try {
+                                val ids = OtherVoices.annotate(getApplication<Application>(),
+                                    otherIdx.map { it.second }, si.session,
+                                    if (si.startMs > 0) si.startMs else System.currentTimeMillis())
+                                for (k in otherIdx.indices) voiceIds[otherIdx[k].first] = ids[k]
+                            } catch (_: Exception) {}
+                        }
                         val you = scores.count { it >= thr }
                         res[si.session] = SessionVoice(si.session, you * 100 / scores.size, scores.size, scores.size)
                         val sb = StringBuilder()
                         sb.append("{\"ev\":").append(enrollVersion).append(",\"win\":3.0,\"hop\":1.5,\"thr\":").append(thr).append(",\"w\":[")
                         starts.indices.forEach { j ->
                             if (j > 0) sb.append(",")
-                            sb.append("[").append(starts[j]).append(",").append(scores[j]).append("]")
+                            sb.append("[").append(starts[j]).append(",").append(scores[j]).append(",").append(voiceIds[j]).append("]")
                         }
                         sb.append("]}")
                         tagsFile(si.session).writeText(sb.toString())
@@ -748,10 +772,25 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Reflection read-back: the nightly PDI review writes reflection and
     // ---- review JSON files into the same Drive folder the app mirrors
     // ---- transcripts to; this reads the newest ones back onto the card.
+    /** One thing the person owes (owner you) or is owed (owner them). */
+    data class ReflectionAction(
+        val what: String, val owner: String, val person: String,
+        val due: String, val area: String, val cite: String,
+    )
+
+    /** One person the card surfaced, with the session that mentioned them. */
+    data class ReflectionPerson(val name: String, val relationship: String, val note: String, val cite: String)
+
     data class Reflection(
         val kind: String, val label: String, val date: String, val summary: String,
         val wins: List<String>, val improve: List<String>,
         val commitments: List<String>, val ifThen: String?,
+        val actions: List<ReflectionAction> = emptyList(),
+        val people: List<ReflectionPerson> = emptyList(),
+        val keep: List<String> = emptyList(),
+        val communication: List<String> = emptyList(),
+        val focus: String = "",
+        val experimentDraft: ExperimentDraft? = null,
     )
 
     private val _reflection = MutableStateFlow<Reflection?>(null)
@@ -764,17 +803,42 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun parseReflection(kind: String, label: String, text: String): Reflection? = try {
         val o = org.json.JSONObject(text)
+        fun txt(o: org.json.JSONObject, k: String): String = o.optString(k, "").trim()
         fun arr(k: String): List<String> {
             val a = o.optJSONArray(k) ?: return emptyList()
             return (0 until a.length()).mapNotNull { i -> a.optString(i).trim().takeIf { it.isNotEmpty() } }
         }
         val ifS = o.optString("if", "").trim().ifBlank { null }
         val thS = o.optString("then", "").trim().ifBlank { null }
+        val ppl = mutableListOf<ReflectionPerson>()
+        o.optJSONArray("people")?.let { a ->
+            for (i in 0 until a.length()) {
+                val x = a.optJSONObject(i) ?: continue
+                val nm = txt(x, "name")
+                if (nm.isNotBlank()) ppl.add(ReflectionPerson(nm, txt(x, "relationship"), txt(x, "note"), txt(x, "cite")))
+            }
+        }
+        val expo = o.optJSONObject("experiment")?.let { x ->
+            ExperimentLogic.cleanDraft(ExperimentDraft(txt(x, "behaviour"), txt(x, "trigger"), txt(x, "action"), txt(x, "success")))
+        }
+        val acts = mutableListOf<ReflectionAction>()
+        o.optJSONArray("actions")?.let { a ->
+            for (i in 0 until a.length()) {
+                val x = a.optJSONObject(i) ?: continue
+                val w = txt(x, "what")
+                if (w.isNotBlank()) acts.add(ReflectionAction(w,
+                    txt(x, "owner").lowercase().let { if (it == "you" || it == "them") it else "unclear" },
+                    txt(x, "person"), txt(x, "due"),
+                    txt(x, "area").lowercase().let { if (it == "work" || it == "personal") it else "" },
+                    txt(x, "cite")))
+            }
+        }
         Reflection(kind, label,
             o.optString("date", "").ifBlank { o.optString("period", "") },
             o.optString("summary", "").trim(),
             arr("wins"), arr("improve"), arr("commitments"),
-            if (ifS != null && thS != null) "If $ifS, then $thS." else null)
+            if (ifS != null && thS != null) "If $ifS, then $thS." else null,
+            acts, ppl, arr("keep"), arr("communication"), txt(o, "focus"), expo)
     } catch (_: Exception) { null }
 
     fun loadReflections(force: Boolean = false) {
@@ -1704,6 +1768,10 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 getApplication<Application>().filesDir
                     .listFiles()?.forEach { f -> if (f.name.endsWith(".zip") && f.delete()) files++ }
+                PeopleRegister.clear(getApplication<Application>())
+                OtherVoices.clear(getApplication<Application>())
+                LoopStore.clear(getApplication<Application>())
+                ExperimentStore.clear(getApplication<Application>())
                 notes.add("$files local files deleted")
                 val wiped = wipeDriveTranscripts()
                 notes.add("$wiped Drive copies deleted")

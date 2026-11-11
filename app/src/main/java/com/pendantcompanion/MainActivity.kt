@@ -355,6 +355,14 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         Spacer(Modifier.height(8.dp))
         ReflectionCard(vm)
         Spacer(Modifier.height(8.dp))
+        ExperimentCard(vm)
+        Spacer(Modifier.height(8.dp))
+        OpenLoopsCard()
+        Spacer(Modifier.height(8.dp))
+        PeopleCard()
+        Spacer(Modifier.height(8.dp))
+        VoicesCard()
+        Spacer(Modifier.height(8.dp))
         VoiceInsightsCard(vm)
         Spacer(Modifier.height(8.dp))
         val ctx = LocalContext.current
@@ -632,6 +640,40 @@ fun ReflectionCard(vm: PendantViewModel) {
                 }
                 cur.ifThen?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic)
+                }
+                if (cur.keep.isNotEmpty()) {
+                    Text("Keep doing", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    cur.keep.forEach { Text("\u2022 $it", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (cur.actions.isNotEmpty()) {
+                    Text("To do", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    cur.actions.forEach { a ->
+                        val who = when (a.owner) {
+                            "you" -> "You"
+                            "them" -> if (a.person.isNotBlank()) a.person else "They"
+                            else -> "?"
+                        }
+                        val meta = listOf(a.due, a.area).filter { it.isNotBlank() }.joinToString(" \u00B7 ")
+                        Text("\u2022 " + who + ": " + a.what + (if (meta.isNotBlank()) " (" + meta + ")" else "") +
+                            (if (a.cite.isNotBlank()) " " + a.cite else ""),
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                if (cur.people.isNotEmpty()) {
+                    Text("People", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    cur.people.take(6).forEach { p ->
+                        val meta = if (p.relationship.isNotBlank()) " (" + p.relationship + ")" else ""
+                        Text("\u2022 " + p.name + meta + (if (p.cite.isNotBlank()) " " + p.cite else ""),
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                if (cur.communication.isNotEmpty()) {
+                    Text("How you came across", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    cur.communication.forEach { Text("\u2022 $it", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (cur.focus.isNotBlank()) {
+                    Text("Focus", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    Text(cur.focus, style = MaterialTheme.typography.bodySmall)
                 }
             }
             if (reviews.isNotEmpty()) {
@@ -1043,9 +1085,10 @@ fun AiCard(vm: PendantViewModel) {
                 Switch(checked = enabled, onCheckedChange = { vm.setAiEnabled(it) })
             }
             Text(
-                "Once a day at the time below, the app sends the day's transcripts to the AI service you chose and writes the reflection cards into the same folder as the transcripts. The audio itself never leaves the phone, and your key stays in the app's private storage.",
+                "Once a day at the time below, the app sends the day's transcripts to the AI service you chose and writes the reflection cards into the same folder as the transcripts. On Sundays, the 1st of a month and a few other dates it also writes the longer reviews, which send the transcripts for the whole period. The audio itself never leaves the phone, and your key stays in the app's private storage.",
                 style = MaterialTheme.typography.bodySmall,
             )
+            AiDisclosure(provider, baseUrl)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Service", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 Button(onClick = { vm.setAiProvider("gemini") }, enabled = provider != "gemini") { Text("Gemini") }
@@ -1176,6 +1219,326 @@ fun StorageCard(vm: PendantViewModel) {
                 )
             }
         }
+    }
+}
+
+private fun experimentCheckLabel(r: String): String = when (r) {
+    "attempted" -> "Tried it"
+    "not_attempted" -> "Didn't try it"
+    "no_opportunity" -> "Didn't come up"
+    else -> "Unclear"
+}
+
+@Composable
+fun ExperimentCard(vm: PendantViewModel) {
+    val ctx = LocalContext.current
+    val prefs = remember { ctx.getSharedPreferences(ReflectionAi.PREFS, Context.MODE_PRIVATE) }
+    val refl by vm.reflection.collectAsState()
+    var active by remember { mutableStateOf<Experiment?>(null) }
+    var past by remember { mutableStateOf(emptyList<Experiment>()) }
+    var reload by remember { mutableStateOf(0) }
+    var dismissed by remember { mutableStateOf(prefs.getString("exp_draft_dismissed", "") ?: "") }
+    var writing by remember { mutableStateOf(false) }
+    var whenText by remember { mutableStateOf("") }
+    var doText by remember { mutableStateOf("") }
+    val today = remember { java.time.LocalDate.now().toString() }
+    LaunchedEffect(reload) {
+        val both = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            ExperimentStore.active(ctx) to ExperimentStore.history(ctx)
+        }
+        active = both.first
+        past = both.second
+    }
+    val e = active
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Experiment", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            if (e != null) {
+                Text(e.behaviour, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text("When: " + e.trigger, style = MaterialTheme.typography.bodySmall)
+                Text("Then: " + e.action, style = MaterialTheme.typography.bodySmall)
+                if (e.success.isNotBlank()) Text("Success looks like: " + e.success, style = MaterialTheme.typography.bodySmall)
+                Text(ExperimentLogic.summaryLine(e), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                val due = ExperimentLogic.reviewDue(e, today)
+                Text(
+                    if (due) "Review time: has it worked?" else "Review in " + ExperimentLogic.daysLeft(e, today) + " days",
+                    style = MaterialTheme.typography.labelSmall)
+                e.checks.takeLast(5).reversed().forEach { c ->
+                    Text(
+                        "\u2022 " + c.date + ": " + experimentCheckLabel(c.result) + (if (c.note.isNotBlank()) " (" + c.note + ")" else ""),
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                    if (due) {
+                        TextButton(onClick = { ExperimentStore.extend(ctx, today); reload += 1 }) { Text("Keep going 7 more days") }
+                        TextButton(onClick = { ExperimentStore.finish(ctx, "worked"); reload += 1 }) { Text("It worked") }
+                        TextButton(onClick = { ExperimentStore.finish(ctx, "not_working"); reload += 1 }) { Text("Not working") }
+                    }
+                    TextButton(onClick = { ExperimentStore.finish(ctx, "stopped"); reload += 1 }) { Text("Stop") }
+                }
+            } else {
+                val d = refl?.experimentDraft
+                if (d != null && d.behaviour != dismissed) {
+                    Text("Suggested from your latest daily card", style = MaterialTheme.typography.labelMedium)
+                    Text(d.behaviour, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("When: " + d.trigger, style = MaterialTheme.typography.bodySmall)
+                    Text("Then: " + d.action, style = MaterialTheme.typography.bodySmall)
+                    if (d.success.isNotBlank()) Text("Success looks like: " + d.success, style = MaterialTheme.typography.bodySmall)
+                    Row {
+                        Button(onClick = { ExperimentStore.start(ctx, d, today); reload += 1 }) { Text("Start this experiment") }
+                        TextButton(onClick = {
+                            dismissed = d.behaviour
+                            prefs.edit().putString("exp_draft_dismissed", d.behaviour).apply()
+                        }) { Text("Not now") }
+                    }
+                    Text(
+                        "Nothing starts until you tap Start. It runs for 7 days, and each night's card checks whether you tried it, " +
+                            "counting only days the situation really came up.",
+                        style = MaterialTheme.typography.labelSmall)
+                } else {
+                    Text(
+                        "No experiment running. When a daily card spots a real opportunity it will suggest one here, or you can write your own.",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                TextButton(onClick = { whenText = ""; doText = ""; writing = true }) { Text("Write my own") }
+            }
+            if (past.isNotEmpty()) {
+                Text("Past experiments", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                past.take(3).forEach {
+                    Text(
+                        "\u2022 " + it.behaviour + " \u2014 " + ExperimentLogic.outcomeLabel(it) + " (" + it.startDate + ")",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+    if (writing) {
+        AlertDialog(
+            onDismissRequest = { writing = false },
+            title = { Text("Write your own experiment") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = whenText, onValueChange = { whenText = it },
+                        label = { Text("When this happens...") }, singleLine = true)
+                    OutlinedTextField(value = doText, onValueChange = { doText = it },
+                        label = { Text("I will...") })
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (doText.isNotBlank()) {
+                        ExperimentStore.start(ctx, ExperimentDraft(doText, whenText, doText, ""), today)
+                        writing = false
+                        reload += 1
+                    }
+                }) { Text("Start") }
+            },
+            dismissButton = { TextButton(onClick = { writing = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun LoopRows(items: List<OpenLoop>, onDone: (Int) -> Unit, onDrop: (Int) -> Unit) {
+    items.take(8).forEach { l ->
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(l.what, style = MaterialTheme.typography.bodySmall)
+                val meta = listOf(l.person, l.due, l.area, "since " + l.firstSeen).filter { it.isNotBlank() }.joinToString(" \u00B7 ")
+                Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
+            TextButton(onClick = { onDone(l.id) }) { Text("Done") }
+            TextButton(onClick = { onDrop(l.id) }) { Text("Drop") }
+        }
+    }
+    if (items.size > 8) Text("and " + (items.size - 8) + " more", style = MaterialTheme.typography.labelSmall)
+}
+
+@Composable
+fun OpenLoopsCard() {
+    val ctx = LocalContext.current
+    var loops by remember { mutableStateOf(emptyList<OpenLoop>()) }
+    var reload by remember { mutableStateOf(0) }
+    LaunchedEffect(reload) {
+        loops = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { LoopStore.open(ctx) }
+    }
+    val mine = loops.filter { it.owner == "you" }
+    val theirs = loops.filter { it.owner == "them" }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                if (loops.isEmpty()) "Open loops" else "Open loops (" + loops.size + ")",
+                style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            if (loops.isEmpty()) {
+                Text(
+                    "Nothing open. To-dos and promises from your daily cards collect here until you tick them off. " +
+                        "A ticked or dropped item never comes back when a later card mentions it again.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            if (mine.isNotEmpty()) {
+                Text("You owe", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                LoopRows(mine, { LoopStore.setStatus(ctx, it, "done"); reload += 1 }, { LoopStore.setStatus(ctx, it, "dropped"); reload += 1 })
+            }
+            if (theirs.isNotEmpty()) {
+                Text("Waiting on others", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                LoopRows(theirs, { LoopStore.setStatus(ctx, it, "done"); reload += 1 }, { LoopStore.setStatus(ctx, it, "dropped"); reload += 1 })
+            }
+        }
+    }
+}
+
+@Composable
+fun PeopleCard() {
+    val ctx = LocalContext.current
+    var people by remember { mutableStateOf(emptyList<PersonRecord>()) }
+    var reload by remember { mutableStateOf(0) }
+    LaunchedEffect(reload) {
+        people = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { PeopleRegister.list(ctx) }
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(if (people.isEmpty()) "People" else "People (" + people.size + ")",
+                 style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            if (people.isEmpty()) {
+                Text(
+                    "Names that come up in your daily cards collect here, with the sessions that mention them. " +
+                        "Nothing leaves the phone, and nothing is sent to the AI service.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            people.take(10).forEach { p ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(p.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        val meta = mutableListOf<String>()
+                        if (p.relationship.isNotBlank()) meta.add(p.relationship)
+                        meta.add("in " + p.sessions.size + (if (p.sessions.size == 1) " conversation" else " conversations"))
+                        Text(meta.joinToString(" \u00B7 "),
+                             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        if (p.note.isNotBlank()) Text(p.note, style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = { PeopleRegister.forget(ctx, p.name); reload += 1 }) { Text("Forget") }
+                }
+            }
+            if (people.size > 10) Text("and " + (people.size - 10) + " more", style = MaterialTheme.typography.labelSmall)
+            if (people.isNotEmpty()) TextButton(onClick = { PeopleRegister.clear(ctx); reload += 1 }) { Text("Forget everyone") }
+        }
+    }
+}
+
+@Composable
+fun VoicesCard() {
+    val ctx = LocalContext.current
+    val prefs = remember { ctx.getSharedPreferences(ReflectionAi.PREFS, Context.MODE_PRIVATE) }
+    var voices by remember { mutableStateOf(emptyList<VoiceProfile>()) }
+    var people by remember { mutableStateOf(emptyList<PersonRecord>()) }
+    var stats by remember { mutableStateOf(emptyMap<Int, VoiceTimeStat>()) }
+    var reload by remember { mutableStateOf(0) }
+    var on by remember { mutableStateOf(OtherVoices.enabled(prefs)) }
+    var strict by remember { mutableStateOf(OtherVoices.matchThr(prefs)) }
+    LaunchedEffect(reload) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val v = OtherVoices.load(ctx).sortedByDescending { it.lastSeenMs }
+            val pe = PeopleRegister.list(ctx)
+            val st = OtherVoices.timeStats(ctx)
+            voices = v; people = pe; stats = st
+        }
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(if (voices.isEmpty()) "Other voices" else "Other voices (" + voices.size + ")",
+                 style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Learn recurring voices", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Switch(checked = on, onCheckedChange = { on = it; OtherVoices.setEnabled(prefs, it) })
+            }
+            Text(
+                "When sessions are scored, voice that is clearly not yours is grouped into recurring voices so you can name them. " +
+                    "Names stay on this phone; only named voices are told the AI service apart from \u201Cothers\u201D.",
+                style = MaterialTheme.typography.bodySmall)
+            if (voices.isEmpty()) {
+                Text(
+                    "No other voices yet. Score new sessions in the Voiceprint card; a voice appears here once several windows agree it is the same person.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            voices.take(10).forEach { v ->
+                Column(Modifier.fillMaxWidth()) {
+                    Text(
+                        if (v.name.isNotBlank()) v.name else "Voice " + v.id,
+                        style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    val st = stats[v.id]
+                    Text(
+                        "Heard in " + v.sessions.size + (if (v.sessions.size == 1) " conversation" else " conversations") +
+                            (if (st != null) " \u00B7 " + Math.round(st.secondsWeek / 60.0) + " min this week \u00B7 last " +
+                                java.text.SimpleDateFormat("d MMM", Locale.getDefault()).format(java.util.Date(st.lastHeardMs)) else ""),
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                        if (v.name.isBlank()) {
+                            var nm by remember(v.id) { mutableStateOf("") }
+                            OutlinedTextField(
+                                value = nm, onValueChange = { nm = it },
+                                label = { Text("Name") }, singleLine = true,
+                                modifier = Modifier.width(150.dp))
+                            Button(onClick = { if (OtherVoices.name(ctx, v.id, nm)) reload += 1 }) { Text("Save name") }
+                            people.filter { pv -> pv.name.isNotBlank() && pv.sessions.any { it in v.sessions } }
+                                .take(2).forEach { pv ->
+                                    OutlinedButton(onClick = { if (OtherVoices.name(ctx, v.id, pv.name)) reload += 1 }) {
+                                        Text("Call this " + pv.name + "?")
+                                    }
+                                }
+                        } else {
+                            TextButton(onClick = { OtherVoices.forget(ctx, v.id); reload += 1 }) { Text("Forget voice") }
+                        }
+                    }
+                }
+            }
+            if (voices.size > 10) Text("and " + (voices.size - 10) + " more", style = MaterialTheme.typography.labelSmall)
+            val namedIds = voices.filter { it.name.isNotBlank() }.map { it.id }.toSet()
+            val now = System.currentTimeMillis()
+            val quiet = VoiceTime.catchUp(stats, namedIds, now)
+            if (quiet.isNotEmpty()) {
+                Text("Worth a catch-up", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                quiet.take(5).forEach { id ->
+                    val nm = voices.firstOrNull { it.id == id }?.name ?: ""
+                    val days = (now - (stats[id]?.lastHeardMs ?: now)) / VoiceTime.DAY_MS
+                    Text("\u2022 $nm: not heard for $days days", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Match strictness " + String.format(Locale.US, "%.2f", strict),
+                    style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { val nv = (strict + 0.05f).coerceAtMost(0.95f); strict = nv; OtherVoices.setMatchThr(prefs, nv) }) { Text("Stricter") }
+                TextButton(onClick = { val nv = (strict - 0.05f).coerceAtLeast(0.50f); strict = nv; OtherVoices.setMatchThr(prefs, nv) }) { Text("Looser") }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { OtherVoices.clear(ctx); reload += 1 }) { Text("Forget all voices") }
+            }
+        }
+    }
+}
+
+/** Who receives what when insights run, in plain words. Shown wherever the AI service is set up. */
+@Composable
+fun AiDisclosure(provider: String, baseUrl: String) {
+    val who = if (provider == "gemini") "Google Gemini (generativelanguage.googleapis.com)" else {
+        val host = try { java.net.URI(baseUrl.trim()).host } catch (_: Exception) { null }
+        if (host.isNullOrBlank()) "the service at the base URL you enter" else host
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("What leaves this phone", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Sent to $who, using your own key: the transcripts of the period being summarised. That is today for the daily card, " +
+                "and the whole week, month, quarter, half-year or year for the longer reviews. Lines are marked YOU, OTHER or UNSURE, " +
+                "with any names you have given to recurring voices, and a short description of your current experiment if one is running. " +
+                "Transcripts include other people's words.",
+            style = MaterialTheme.typography.bodySmall)
+        Text(
+            "Never sent: audio, voiceprints, your People list, your open loops, or your Drive files. " +
+                "The only other online use is downloading a speech model when you choose to, and your Drive folder if you mirror transcripts there.",
+            style = MaterialTheme.typography.bodySmall)
     }
 }
 

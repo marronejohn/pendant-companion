@@ -525,6 +525,7 @@ fun SetupWizard(vm: PendantViewModel) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 )
                 Text("Free keys: aistudio.google.com for Gemini, console.groq.com/keys for Groq, openrouter.ai/keys for OpenRouter.", style = MaterialTheme.typography.bodySmall)
+                AiDisclosure(aiProvider, aiBaseUrl)
                 Button(onClick = { pickFolder.launch(null) }) {
                     Text(if (driveFolder == null) "Pick where cards and transcripts go (a Drive folder)"
                          else "Cards folder set (tap to change)")
