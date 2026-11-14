@@ -31,6 +31,36 @@ leaves it.
 - **Delete what you don't want**: per-session delete, delete of all short or
   empty recordings, and a factory reset that clears everything.
 
+## Reliable background sync
+
+Syncing and transcription run in a foreground service, so Android shows a
+persistent notification while they work. That notification is what keeps the
+work alive; do not force-stop the app from it. For overnight and scheduled
+syncs to be reliable on phones that aggressively save battery:
+
+- **Settings → Apps → Pendant Companion → Battery → Unrestricted** (on some
+  phones: "Don't optimize" / "Allow background activity").
+- Turn off **Remove permissions if app is unused** on the same screen.
+- Don't swipe the app away from Recents; on some phones that kills background
+  services.
+- Keep Bluetooth on. A sync that is interrupted picks up where it left off.
+
+## Export
+
+Everything the app records can leave it only when you send it. Any session can
+be shared from the session list: a single session or several at once, as
+transcript text or audio, through Android's share sheet (Save to Files, email,
+anything installed). Transcripts also mirror to your Drive folder
+automatically, as described above.
+
+## Roadmap
+
+Planned, in the same privacy-first shape as everything else:
+
+- Multilingual Whisper models (transcription today is English-only).
+- An optional self-hosted transcription endpoint for people who prefer to run
+  their own Whisper server.
+
 ## Daily insights (AI), bring-your-own key
 
 The reflection cards are written by an AI service you choose, called from your
