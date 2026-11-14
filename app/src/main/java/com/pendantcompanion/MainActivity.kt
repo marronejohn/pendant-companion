@@ -310,7 +310,7 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         }
         lastCrash?.let {
             Spacer(Modifier.height(8.dp))
-            Text("LAST CRASH (screenshot this for Fo):\n" + it,
+            Text("LAST CRASH (screenshot this for a bug report):\n" + it,
                  style = MaterialTheme.typography.bodySmall,
                  color = MaterialTheme.colorScheme.error)
         }
