@@ -3,11 +3,11 @@
 You are picking up an existing, working Android app. Read this brief in full before changing anything, and keep every locked decision below intact.
 
 ## What the app is
-Pendant Companion (package `com.pendantcompanion`) is a privacy-first Android companion app for the Limitless/Omi LS-PT-01 pendant (user's device serial ). It talks to the pendant directly over BLE, pulls recordings off it non-destructively, decrypts and transcribes everything on-device, and produces daily/periodic AI reflection cards. The user is in Australia. Nothing leaves the phone except transcripts the user chooses to mirror to their own Google Drive, and AI requests that use the user's own API key.
+Pendant Companion (package `com.pendantcompanion`) is a privacy-first Android companion app for the Limitless/Omi LS-PT-01 pendant (user's device serial the owner's device). It talks to the pendant directly over BLE, pulls recordings off it non-destructively, decrypts and transcribes everything on-device, and produces daily/periodic AI reflection cards. The user is the user (Australia). Nothing leaves the phone except transcripts the user chooses to mirror to their own Google Drive, and AI requests that use the user's own API key.
 
 ## Stack and build
 - Kotlin + Jetpack Compose, single module. minSdk 26, target/compileSdk 35, arm64-v8a only, NDK 27.2.12479018, Java 17, Gradle 8.9. Debug-signed APKs.
-- Private repo: github.com/marronejohn/pendant-companion (branch `main`, commits as "the project author" / ).
+- Repo: github.com/marronejohn/pendant-companion (branch `main`, commits as "the user" / the owner's email).
 - The release APK must stay under ~20 MB (it is delivered via Google Drive), so jniLibs use `useLegacyPackaging` and native libs are stripped carefully.
 - Version history lives in `app/build.gradle.kts` (current: versionCode 30, versionName "0.14.1").
 
