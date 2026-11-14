@@ -11,6 +11,16 @@ reflection cards from those transcripts.
 Everything except one optional step happens on the phone. The audio never
 leaves it.
 
+## Why this exists
+
+Meta acquired Limitless in December 2025 and stopped selling the Pendant, and
+access to the official cloud can end with little notice: owners in several
+regions were given about two weeks to export their data before it was cut off.
+Pendant Companion was built for exactly that risk. It talks to the pendant
+directly over Bluetooth, with no Limitless account, no subscription and no
+cloud anywhere in the loop. Your recordings, transcripts and reflection cards
+live only on your phone and your own Drive.
+
 ## What it does
 
 - **Sync**: read-only download of every recording on the pendant (optional
