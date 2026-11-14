@@ -30,7 +30,7 @@ As of v0.13.40 the wizard renders a **status trail**: the last six timestamped i
 - The app is offline except the AI feature. Existing user data (model file, enrollment, transcripts) must survive every upgrade: the wizard treats already-done steps as done and shows itself only once.
 
 ## Working rules
-- The agent building this cannot test Bluetooth; the user sideloads each APK and reports results. Keep changes small, one concern per version, and bump versionCode/versionName every build.
+- The developer cannot test Bluetooth; sideload each APK and reports results. Keep changes small, one concern per version, and bump versionCode/versionName every build.
 - Never break the existing data flow or rename prefs/files the app already reads.
 - Deliver the debug-signed APK; do not add services, telemetry, or accounts. No analytics, no network calls beyond the model download and the user-configured AI provider.
 - UI voice: plain, warm, second person; the app speaks to the user directly ("The pendant's own copy is untouched").
