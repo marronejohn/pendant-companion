@@ -429,13 +429,21 @@ fun SetupWizard(vm: PendantViewModel) {
                         (if (total > 0) " of " + String.format(java.util.Locale.US, "%.0f", total / 1_000_000.0) + " MB" else ""))
                     if (total > 0) LinearProgressIndicator(got.toFloat() / total, Modifier.fillMaxWidth())
                 } else {
-                    Text("The app needs a speech model. Download it once (about 45 to 60 MB), or pick a file you already have.")
+                    Text("The app needs a speech model. Download it once, or pick a file you already have.")
                     Button(onClick = { wlog("download tapped"); vm.downloadWhisperModel(
-                        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q8_0.bin",
-                        "tiny.en (~43 MB, fastest)") }) { Text("Download the fast model (~43 MB)") }
+                        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin",
+                        "small.en (~182 MB, most accurate)",
+                        "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin") }) {
+                        Text("Download the best free model (~182 MB)") }
+                    Text("small.en is the most accurate free model that still runs well on a phone; transcription takes a little longer.", style = MaterialTheme.typography.bodySmall)
                     Button(onClick = { wlog("download tapped"); vm.downloadWhisperModel(
                         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin",
-                        "base.en (~60 MB, more accurate)") }) { Text("Download the better model (~60 MB)") }
+                        "base.en (~60 MB, more accurate)",
+                        "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin") }) { Text("Download the better model (~60 MB)") }
+                    Button(onClick = { wlog("download tapped"); vm.downloadWhisperModel(
+                        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q8_0.bin",
+                        "tiny.en (~43 MB, fastest)",
+                        "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q8_0.bin") }) { Text("Download the fast model (~43 MB)") }
                     OutlinedButton(onClick = { pickWhisper.launch(arrayOf("*/*")) }) { Text("Pick a model file instead") }
                 }
                 val te = trans as? TransState.TransError
@@ -472,8 +480,11 @@ fun SetupWizard(vm: PendantViewModel) {
                 StepHead(4, "Your voice", "Teach the app what you sound like, so every session shows how much of it is you.")
                 if (!speaker.loaded) {
                     Text("First, the voice model: a one-time file (about 85 MB) that runs only on this phone.")
-                    Button(onClick = { pickVoice.launch(arrayOf("*/*")) }) { Text("Pick the voice model (.onnx)") }
-                    Text("The file is ecapa-any-length.onnx; the app's guide says where to get it. You can also finish this step later from the main screen.", style = MaterialTheme.typography.bodySmall)
+                    Button(onClick = { vm.downloadEcapaModel(
+                        "https://github.com/marronejohn/pendant-companion/releases/download/v0.15.1-models/ecapa-any-length.onnx",
+                        "voice model (~85 MB)") }) { Text("Download the voice model (~85 MB)") }
+                    Button(onClick = { pickVoice.launch(arrayOf("*/*")) }) { Text("Pick the voice model (.onnx) instead") }
+                    Text("The download is checked against the known-good copy before it loads (md5 32728b2f\u2026). You can also finish this step later from the main screen.", style = MaterialTheme.typography.bodySmall)
                 } else {
                     if (!micOn) {
                         Text("Now record yourself: 30 seconds of normal talking, a few sentences about your day.")

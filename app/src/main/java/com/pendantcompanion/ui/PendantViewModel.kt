@@ -168,55 +168,111 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     private val _modelDownload = MutableStateFlow<Triple<String, Long, Long>?>(null)
     val modelDownload: StateFlow<Triple<String, Long, Long>?> = _modelDownload
 
-    /** Downloads a Whisper ggml model into the app's default model path. */
-    fun downloadWhisperModel(url: String, label: String) {
+    /** Downloads a Whisper ggml model into the app's default model path.
+     *  Tries the primary URL first, then the mirror if the first source fails. */
+    fun downloadWhisperModel(url: String, label: String, mirrorUrl: String? = null) {
         transJob = scope.launch(Dispatchers.IO) {
-            try {
-                val dir = java.io.File(getApplication<Application>().filesDir, "whisper").apply { mkdirs() }
-                val dst = java.io.File(dir, "model.bin")
-                val tmp = java.io.File(dir, "model.bin.part")
-                val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 30_000
-                conn.instanceFollowRedirects = true
-                val total = conn.contentLengthLong
-                conn.inputStream.use { ins ->
-                    tmp.outputStream().use { out ->
-                        val buf = ByteArray(1 shl 16)
-                        var got = 0L
-                        while (true) {
-                            val n = ins.read(buf)
-                            if (n < 0) break
-                            out.write(buf, 0, n)
-                            got += n
-                            _modelDownload.value = Triple(label, got, if (total > 0) total else 0L)
+            var lastErr: Exception? = null
+            for (src in listOfNotNull(url, mirrorUrl)) {
+                try {
+                    val dir = java.io.File(getApplication<Application>().filesDir, "whisper").apply { mkdirs() }
+                    val dst = java.io.File(dir, "model.bin")
+                    val tmp = java.io.File(dir, "model.bin.part")
+                    val conn = java.net.URL(src).openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 30_000
+                    conn.instanceFollowRedirects = true
+                    val total = conn.contentLengthLong
+                    conn.inputStream.use { ins ->
+                        tmp.outputStream().use { out ->
+                            val buf = ByteArray(1 shl 16)
+                            var got = 0L
+                            while (true) {
+                                val n = ins.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                got += n
+                                _modelDownload.value = Triple(label, got, if (total > 0) total else 0L)
+                            }
                         }
                     }
+                    conn.disconnect()
+                    if (tmp.length() < 10_000_000) {
+                        throw IllegalStateException("the download came up short (${tmp.length()} bytes)")
+                    }
+                    if (dst.exists()) dst.delete()
+                    if (!tmp.renameTo(dst)) throw IllegalStateException("could not move the downloaded model into place")
+                    if (prefs.getString("whisper_model_path", null) == null) {
+                        prefs.edit().putString("whisper_model_path", dst.absolutePath).commit()
+                    }
+                    val h = WhisperBridge.nativeInit(dst.absolutePath)
+                    val ok = h != 0L
+                    if (ok) WhisperBridge.nativeFree(h)
+                    _model.value = ModelInfo(dst.absolutePath, dst.length(), ok)
+                    _modelDownload.value = null
+                    if (!ok) throw IllegalStateException("Whisper did not load the downloaded model")
+                    return@launch
+                } catch (e: Exception) {
+                    lastErr = e
+                    _modelDownload.value = null
+                    java.io.File(java.io.File(getApplication<Application>().filesDir, "whisper"), "model.bin.part").delete()
                 }
-                conn.disconnect()
-                if (dst.length() < 10_000_000) {
-                    dst.delete()
-                    throw IllegalStateException("the download came up short (${dst.length()} bytes); try again or pick a file manually")
-                }
-                // renameTo fails when the destination already exists, which is
-                // exactly the returning-user case: drop the old model first.
-                if (dst.exists()) dst.delete()
-                if (!tmp.renameTo(dst)) throw IllegalStateException("could not move the downloaded model into place")
-                if (prefs.getString("whisper_model_path", null) == null) {
-                    prefs.edit().putString("whisper_model_path", dst.absolutePath).commit()
-                }
-                // Validate the download the same way the file-picker path does,
-                // so the guided flow sees ready=true and moves on.
-                val h = WhisperBridge.nativeInit(dst.absolutePath)
-                val ok = h != 0L
-                if (ok) WhisperBridge.nativeFree(h)
-                _model.value = ModelInfo(dst.absolutePath, dst.length(), ok)
-                _modelDownload.value = null
-                if (!ok) throw IllegalStateException("Whisper did not load the downloaded model")
-            } catch (e: Exception) {
-                _modelDownload.value = null
-                _trans.value = TransState.TransError(-1,
-                    "Download failed: ${e.message ?: e.javaClass.simpleName}. You can also pick the model file manually.")
             }
+            _trans.value = TransState.TransError(-1,
+                "Download failed from every source${if (mirrorUrl != null) " (primary and mirror)" else ""}: ${lastErr?.message ?: lastErr?.javaClass?.simpleName ?: "unknown"}. You can also pick the model file manually.")
+        }
+    }
+
+    /** Known-good copy of the voiceprint model (ecapa-any-length.onnx, 84,251,116 bytes). */
+    private val ecapaMd5 = "32728b2f4b5b9a07fc09157228087de9"
+
+    /** Downloads the ECAPA voiceprint model, trying the mirror if the primary fails.
+     *  The file is checked against the known md5 before it is loaded. */
+    fun downloadEcapaModel(url: String, label: String, mirrorUrl: String? = null) {
+        if (speakerJob?.isActive == true) return
+        speakerJob = scope.launch(Dispatchers.IO) {
+            var lastErr: Exception? = null
+            for (src in listOfNotNull(url, mirrorUrl)) {
+                try {
+                    _speakerNote.value = "Downloading the voice model\u2026"
+                    val dir = speakerDir()
+                    val dst = java.io.File(dir, "ecapa.onnx")
+                    val tmp = java.io.File(dir, "ecapa.onnx.part")
+                    val conn = java.net.URL(src).openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 30_000
+                    conn.instanceFollowRedirects = true
+                    val total = conn.contentLengthLong
+                    conn.inputStream.use { ins ->
+                        tmp.outputStream().use { out ->
+                            val buf = ByteArray(1 shl 16)
+                            var got = 0L
+                            while (true) {
+                                val n = ins.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                got += n
+                                if (total > 0) _speakerNote.value =
+                                    "Downloading the voice model: " + (got / 1_000_000) + " of " + (total / 1_000_000) + " MB"
+                            }
+                        }
+                    }
+                    conn.disconnect()
+                    if (tmp.length() < 50_000_000L) throw IllegalStateException("the download came up short (${tmp.length()} bytes)")
+                    val md = java.security.MessageDigest.getInstance("MD5").digest(tmp.readBytes())
+                    val got = md.joinToString("") { String.format(java.util.Locale.US, "%02x", it) }
+                    if (got != ecapaMd5) throw IllegalStateException("the file from the server did not match the known-good copy")
+                    if (dst.exists()) dst.delete()
+                    if (!tmp.renameTo(dst)) throw IllegalStateException("could not move the downloaded model into place")
+                    if (!SpeakerVerifier.load(dst.absolutePath)) throw IllegalStateException("ONNX Runtime could not load the downloaded model")
+                    prefs.edit().putString("speaker_model_path", dst.absolutePath).apply()
+                    _speaker.value = _speaker.value.copy(path = dst.absolutePath, loaded = true)
+                    _speakerNote.value = "Voice model downloaded and loaded."
+                    return@launch
+                } catch (e: Exception) {
+                    lastErr = e
+                    java.io.File(speakerDir(), "ecapa.onnx.part").delete()
+                }
+            }
+            _speakerNote.value = "Voice model download failed: ${lastErr?.message ?: lastErr?.javaClass?.simpleName ?: "unknown error"}. You can still pick the file manually."
         }
     }
 
