@@ -3,3 +3,11 @@ build/
 local.properties
 .idea/
 *.iml
+*.apk
+app/.cxx/
+app/build/
+build/
+*.log
+t2.txt
+pendant_sample_clip.wav
+local.properties
