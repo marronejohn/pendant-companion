@@ -11,3 +11,4 @@ build/
 t2.txt
 pendant_sample_clip.wav
 local.properties
+.kotlin/
