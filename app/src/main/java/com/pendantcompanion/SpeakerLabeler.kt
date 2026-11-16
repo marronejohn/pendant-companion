@@ -68,17 +68,29 @@ object SpeakerLabeler {
                         if (voices[i] != 0 && ov > bestW) { bestW = ov; voice = voices[i] }
                     }
                 }
-                val label = when {
-                    den <= 0.0 -> UNSURE
-                    voice != 0 -> OTHER + (voiceNames[voice]?.let { " ($it)" } ?: "")
-                    num / den >= thr -> YOU
-                    num / den >= thr - UNSURE_BAND -> UNSURE
-                    else -> OTHER
+                val label = if (den <= 0.0) UNSURE else labelFor(num / den, thr, voice, bestW)
+                val name = if (label == OTHER + "*" && voice != 0) voiceNames[voice] else null
+                val shown = when {
+                    label == OTHER + "*" && name != null -> OTHER + " ($name)"
+                    label == OTHER + "*" -> OTHER
+                    else -> label
                 }
-                out.append(label).append(": ").append(raw).append('\n')
+                out.append(shown).append(": ").append(raw).append('\n')
             }
             out.toString().trimEnd('\n')
         } catch (_: Exception) { null }
+    }
+
+    /** Pure label decision, unit tested on a laptop. The window score decides:
+     *  YOU at or above the threshold, UNSURE within the band under it. A known
+     *  other voice only ever refines a line the score already calls not-you,
+     *  and only when its window covers at least half of the line's span, so a
+     *  small overlap with a clustered window can never flip a YOU line. */
+    fun labelFor(score: Double, thr: Double, voice: Int, voiceOverlap: Double): String = when {
+        score >= thr -> YOU
+        score >= thr - UNSURE_BAND -> UNSURE
+        voice != 0 && voiceOverlap >= 1.5 -> OTHER + "*"
+        else -> OTHER
     }
 
     /** Weight of the shared span between a window [start, start+win) and the line's assumed 3 s span at [sec, sec+3). */

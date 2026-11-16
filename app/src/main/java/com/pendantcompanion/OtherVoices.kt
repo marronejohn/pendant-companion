@@ -41,9 +41,18 @@ object VoiceClusterer {
      * or better, a new clustered voice when at least [MIN_WINDOWS] unassigned
      * windows agree with each other, else 0 (unassigned).
      */
-    fun assign(known: List<VoiceProfile>, vecs: List<FloatArray>, matchThr: Float, nextId: Int): List<Int> {
+    /** Windows this close to the wearer's own voiceprint never seed or join a
+     *  new voice. The wearer's own quiet or far-mic speech scores below the
+     *  wearer threshold, so without this guard the clusterer built a phantom
+     *  voice out of the wearer and mislabelled the wearer's own lines. */
+    const val WEARER_GUARD = 0.55f
+
+    fun assign(known: List<VoiceProfile>, vecs: List<FloatArray>, matchThr: Float, nextId: Int,
+               wearer: FloatArray? = null): List<Int> {
         val out = IntArray(vecs.size)
         var next = nextId
+        fun wearerLike(v: FloatArray) =
+            wearer != null && v.size == wearer.size && cosine(v, wearer) >= WEARER_GUARD
         for (i in vecs.indices) {
             if (out[i] != 0) continue
             var bestId = 0; var best = -1.0
@@ -52,10 +61,12 @@ object VoiceClusterer {
                 val c = cosine(vecs[i], v.centroid)
                 if (c >= matchThr && c > best) { best = c; bestId = v.id }
             }
+            // A named voice is user-confirmed, so its match beats the guard.
             if (bestId != 0) { out[i] = bestId; continue }
+            if (wearerLike(vecs[i])) continue
             val group = ArrayList<Int>()
             for (j in vecs.indices) {
-                if (out[j] == 0 && cosine(vecs[j], vecs[i]) >= CLUSTER_THR) group.add(j)
+                if (out[j] == 0 && !wearerLike(vecs[j]) && cosine(vecs[j], vecs[i]) >= CLUSTER_THR) group.add(j)
             }
             if (group.size >= MIN_WINDOWS) {
                 next += 1
@@ -126,10 +137,11 @@ object OtherVoices {
      * tags file as the third element of each window.
      */
     @Synchronized
-    fun annotate(context: Context, vecs: List<FloatArray>, session: Int, nowMs: Long): List<Int> {
+    fun annotate(context: Context, vecs: List<FloatArray>, session: Int, nowMs: Long,
+                 wearer: FloatArray? = null): List<Int> {
         val voices = load(context)
         val next = (voices.maxOfOrNull { it.id } ?: 0) + 1
-        val ids = VoiceClusterer.assign(voices, vecs, matchThr(prefs(context)), next)
+        val ids = VoiceClusterer.assign(voices, vecs, matchThr(prefs(context)), next, wearer)
         val mut = voices.toMutableList()
         for (k in ids.indices) {
             val id = ids[k]

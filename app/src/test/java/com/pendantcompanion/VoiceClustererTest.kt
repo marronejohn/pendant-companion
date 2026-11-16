@@ -42,4 +42,20 @@ class VoiceClustererTest {
         assertEquals(1.0, a, 0.01)
         assertEquals(0.0, VoiceClusterer.cosine(vec(1.0), FloatArray(0)), 0.001)
     }
+    @Test fun wearerWindowsNeverFormAVoice() {
+        // Eight windows all close to the wearer's own voiceprint and far from
+        // any known voice: without the wearer guard these clustered into a
+        // phantom voice of the wearer.
+        val wearer = vec(1.0)
+        val vecs = (0 until 8).map { vec(1.0, 0.01, it) }
+        val ids = VoiceClusterer.assign(emptyList(), vecs, 0.70f, 1, wearer)
+        assertTrue(ids.all { it == 0 })
+    }
+
+    @Test fun otherVoiceStillClustersWhenWearerIsKnown() {
+        val wearer = vec(1.0)
+        val vecs = (0 until 8).map { ortho(1.0, 0.01, it) }
+        val ids = VoiceClusterer.assign(emptyList(), vecs, 0.70f, 1, wearer)
+        assertTrue(ids.all { it == 2 })
+    }
 }

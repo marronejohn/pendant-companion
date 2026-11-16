@@ -432,6 +432,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refreshSpeakerInfo()
+        runVoiceMatchFixMigration()
         scope.launch(Dispatchers.IO) {
             try {
                 val f = sessionsIndexFile()
@@ -475,6 +476,23 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         speakerCentroid = readFloats(java.io.File(speakerDir(), "enroll.bin"))
         _speaker.value = SpeakerInfo(saved, loaded, speakerVecs.keys.sorted(), _speaker.value.threshold)
         if (loaded && speakerVecs.isNotEmpty() && speakerCentroid == null) recomputeCentroid()
+    }
+
+    /** One-time cleanup for the 0.15.0/0.15.1 voice-match regression: those
+     *  builds could cluster the wearer's own low-scoring windows into a
+     *  phantom "other voice", which then mislabelled the wearer's own lines.
+     *  Drop the auto-created (unnamed) voices, force every session to rescore
+     *  under the fixed rules, and clear the stale percentages. */
+    private fun runVoiceMatchFixMigration() {
+        if (prefs.getBoolean("voice_match_fix_2026_11", false)) return
+        prefs.edit().putBoolean("voice_match_fix_2026_11", true).apply()
+        val ctx = getApplication<Application>()
+        val all = OtherVoices.load(ctx)
+        val kept = all.filter { it.name.isNotBlank() }
+        if (kept.size != all.size) OtherVoices.save(ctx, kept)
+        prefs.edit().putInt("speaker_enroll_version", prefs.getInt("speaker_enroll_version", 1) + 1).apply()
+        _speakerScores.value = emptyMap()
+        if (_speaker.value.loaded && speakerVecs.isNotEmpty()) scoreSessions()
     }
 
     private fun readFloats(f: java.io.File): FloatArray? = try {
@@ -731,7 +749,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                             try {
                                 val ids = OtherVoices.annotate(getApplication<Application>(),
                                     otherIdx.map { it.second }, si.session,
-                                    if (si.startMs > 0) si.startMs else System.currentTimeMillis())
+                                    if (si.startMs > 0) si.startMs else System.currentTimeMillis(),
+                                    c)
                                 for (k in otherIdx.indices) voiceIds[otherIdx[k].first] = ids[k]
                             } catch (_: Exception) {}
                         }
