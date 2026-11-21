@@ -336,17 +336,17 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             }
         }
         Spacer(Modifier.height(8.dp))
+        SessionsCard(vm)
+        NextArrow("Step 3 of 8: Turn recordings into text")
         val pickModel = rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri -> uri?.let { vm.importModel(it) } }
         WhisperCard(vm, onPickModel = { pickModel.launch(arrayOf("*/*")) })
-        NextArrow("Step 3 of 8: Teach it your voice")
+        NextArrow("Step 4 of 8: Teach it your voice")
         val pickSpeaker = rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri -> uri?.let { vm.importSpeakerModel(it) } }
         SpeakerCard(vm, onPickModel = { pickSpeaker.launch(arrayOf("*/*")) })
-        NextArrow("Step 4 of 8: Clean the recording list")
-        SessionsCard(vm)
         NextArrow("Step 5 of 8: Voice insights")
         VoiceInsightsCard(vm)
         NextArrow("Step 6 of 8: Daily AI card (your API key)")
@@ -420,7 +420,7 @@ fun SessionsCard(vm: PendantViewModel) {
     }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            StepBadge(4, "Clean the recording list")
+            StepBadge(2, "Clean the recording list")
             Text("Recordings from the pendant on this phone", style = MaterialTheme.typography.labelSmall,
                  color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
@@ -816,7 +816,7 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
     LaunchedEffect(Unit) { vm.refreshModelInfo() }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            StepBadge(2, "Turn recordings into text")
+            StepBadge(3, "Turn recordings into text")
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             val mp = model.path
             if (mp == null) {
@@ -1502,7 +1502,7 @@ fun VoicesCard() {
                 style = MaterialTheme.typography.bodySmall)
             if (voices.isEmpty()) {
                 Text(
-                    "No other voices yet. Score new sessions in the Voiceprint card; a voice appears here once several windows agree it is the same person.",
+                    "No other voices yet. Score new sessions in the Teach it your voice card; a voice appears here once several windows agree it is the same person.",
                     style = MaterialTheme.typography.bodySmall)
             }
             if (listHidden && voices.isNotEmpty()) {
@@ -1601,7 +1601,7 @@ fun SpeakerCard(vm: PendantViewModel, onPickModel: () -> Unit) {
     val note by vm.speakerNote.collectAsState()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            StepBadge(3, "Teach it your voice")
+            StepBadge(4, "Teach it your voice")
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             Text(
                 "Tells your voice from background chatter and TV. Everything runs on this phone.",
