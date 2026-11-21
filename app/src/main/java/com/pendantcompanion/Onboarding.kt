@@ -61,7 +61,7 @@ fun FirstRunScreen(vm: PendantViewModel) {
         if (trail.size > 6) trail.removeAt(trail.lastIndex)
         lastEventAt = System.currentTimeMillis()
     }
-    LaunchedEffect(Unit) { wlog("first run open, v0.14.0") }
+    LaunchedEffect(Unit) { wlog("first run open, v0.16.0") }
 
     val perms = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { ok ->
         val btGranted = ok.entries.any {
@@ -186,7 +186,7 @@ fun FirstRunScreen(vm: PendantViewModel) {
                      color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             val clip = LocalClipboardManager.current
-            TextButton(onClick = { clip.setText(AnnotatedString("v0.14.0\n" + trail.joinToString("\n"))) }) {
+            TextButton(onClick = { clip.setText(AnnotatedString("v0.16.0\n" + trail.joinToString("\n"))) }) {
                 Text("Copy")
             }
         }
@@ -525,6 +525,8 @@ fun SetupWizard(vm: PendantViewModel) {
                     Button(onClick = { vm.setAiProvider("gemini") }, enabled = aiProvider != "gemini") { Text("Gemini") }
                     Button(onClick = { vm.setAiProvider("openai"); vm.setAiBaseUrl("https://api.groq.com/openai/v1"); vm.setAiModel("openai/gpt-oss-120b") },
                            enabled = aiProvider != "openai" || aiBaseUrl != "https://api.groq.com/openai/v1") { Text("Groq") }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Button(onClick = { vm.setAiProvider("openai"); vm.setAiBaseUrl("https://openrouter.ai/api/v1"); vm.setAiModel("openai/gpt-oss-120b") },
                            enabled = aiProvider != "openai" || aiBaseUrl != "https://openrouter.ai/api/v1") { Text("OpenRouter") }
                 }

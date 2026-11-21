@@ -319,7 +319,7 @@ object ReflectionAi {
     private data class Ok(val text: String) : Result()
     private data class Err(val msg: String) : Result()
 
-    private fun call(p: android.content.SharedPreferences, prompt: String): Result {
+    private fun call(p: android.content.SharedPreferences, prompt: String, expectJson: Boolean = true): Result {
         val key = key(p)
         return try {
             val (url, body, headers) = when (provider(p)) {
@@ -344,10 +344,21 @@ object ReflectionAi {
                 else -> JSONObject(raw).optJSONArray("candidates")?.optJSONObject(0)
                     ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text") ?: ""
             }
-            val json = extractJson(text) ?: return Err("the reply had no JSON object in it")
+            val json = if (expectJson) extractJson(text) ?: return Err("the reply had no JSON object in it") else text
             Ok(json)
         } catch (e: Exception) {
             Err(e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    /** One tiny call to prove a key works before cards depend on it. */
+    fun testKey(p: android.content.SharedPreferences): String {
+        val k = key(p).trim()
+        if (k.isBlank()) return "No key entered yet."
+        return when (val r = call(p, "Reply with the single word OK.", expectJson = false)) {
+            is Ok -> if (r.text.isNotBlank()) "Key works: ${model(p)} replied."
+                     else "Reached the service but got an empty reply."
+            is Err -> "Test failed: ${r.msg}"
         }
     }
 

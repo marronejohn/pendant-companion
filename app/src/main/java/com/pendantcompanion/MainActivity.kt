@@ -32,6 +32,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
@@ -283,7 +286,9 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
     ) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Device information (read-only)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                StepBadge(1, "Download the recordings")
+                Text("Device information (read-only)", style = MaterialTheme.typography.labelSmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("Serial: ${i.serial.ifEmpty { "" }}")
                 Text("Firmware: ${i.firmware.ifEmpty { "not reported" }}")
@@ -331,39 +336,42 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             }
         }
         Spacer(Modifier.height(8.dp))
+        val pickModel = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri -> uri?.let { vm.importModel(it) } }
+        WhisperCard(vm, onPickModel = { pickModel.launch(arrayOf("*/*")) })
+        NextArrow("Step 3 of 8: Teach it your voice")
+        val pickSpeaker = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri -> uri?.let { vm.importSpeakerModel(it) } }
+        SpeakerCard(vm, onPickModel = { pickSpeaker.launch(arrayOf("*/*")) })
+        NextArrow("Step 4 of 8: Clean the recording list")
+        SessionsCard(vm)
+        NextArrow("Step 5 of 8: Voice insights")
+        VoiceInsightsCard(vm)
+        NextArrow("Step 6 of 8: Daily AI card (your API key)")
+        AiCard(vm)
+        NextArrow("Step 7 of 8: Daily reflection")
+        ReflectionCard(vm)
+        NextArrow("Step 8 of 8: Other voices (optional)")
+        VoicesCard()
+        Spacer(Modifier.height(16.dp))
+        Text("Optional extras", style = MaterialTheme.typography.labelSmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        PeopleCard()
+        Spacer(Modifier.height(8.dp))
         SearchCard(vm)
         Spacer(Modifier.height(8.dp))
         LedCard(vm)
         Spacer(Modifier.height(8.dp))
         AckCard(vm)
         Spacer(Modifier.height(8.dp))
-        AiCard(vm)
-        Spacer(Modifier.height(8.dp))
         StorageCard(vm)
-        Spacer(Modifier.height(8.dp))
-        val pickModel = rememberLauncherForActivityResult(
-            ActivityResultContracts.OpenDocument()
-        ) { uri -> uri?.let { vm.importModel(it) } }
-        WhisperCard(vm, onPickModel = { pickModel.launch(arrayOf("*/*")) })
-        Spacer(Modifier.height(8.dp))
-        val pickSpeaker = rememberLauncherForActivityResult(
-            ActivityResultContracts.OpenDocument()
-        ) { uri -> uri?.let { vm.importSpeakerModel(it) } }
-        SpeakerCard(vm, onPickModel = { pickSpeaker.launch(arrayOf("*/*")) })
-        Spacer(Modifier.height(8.dp))
-        SessionsCard(vm)
-        Spacer(Modifier.height(8.dp))
-        ReflectionCard(vm)
         Spacer(Modifier.height(8.dp))
         ExperimentCard(vm)
         Spacer(Modifier.height(8.dp))
         OpenLoopsCard()
-        Spacer(Modifier.height(8.dp))
-        PeopleCard()
-        Spacer(Modifier.height(8.dp))
-        VoicesCard()
-        Spacer(Modifier.height(8.dp))
-        VoiceInsightsCard(vm)
         Spacer(Modifier.height(8.dp))
         val ctx = LocalContext.current
         var exportedCount by remember { mutableStateOf(-1) }
@@ -412,7 +420,9 @@ fun SessionsCard(vm: PendantViewModel) {
     }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Recordings from the pendant on this phone", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StepBadge(4, "Clean the recording list")
+            Text("Recordings from the pendant on this phone", style = MaterialTheme.typography.labelSmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             if (shown.isEmpty()) {
                 Text("Nothing saved yet. Tap Download flash first.",
@@ -613,16 +623,19 @@ fun ReflectionCard(vm: PendantViewModel) {
     val r by vm.reflection.collectAsState()
     val reviews by vm.reflectionReviews.collectAsState()
     val note by vm.reflectionNote.collectAsState()
+    val aiNote by vm.aiNote.collectAsState()
     LaunchedEffect(Unit) { vm.loadReflections() }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Daily reflection", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StepBadge(7, "Daily reflection")
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             val cur = r
             if (cur == null) {
                 Text(
-                    note.ifBlank { "No daily reflection yet. The nightly review writes one into your Drive folder; it appears here." },
+                    note.ifBlank { "No reflection written yet. Cards are written once a day at the time set in the Daily AI card above." },
                     style = MaterialTheme.typography.bodySmall)
+                Button(onClick = { vm.aiGenerateNow() }) { Text("Write today's reflection now") }
+                if (aiNote.isNotBlank()) Text(aiNote, style = MaterialTheme.typography.bodySmall)
             } else {
                 Text(cur.date, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 if (cur.summary.isNotBlank()) Text(cur.summary, style = MaterialTheme.typography.bodyMedium)
@@ -698,16 +711,21 @@ fun VoiceInsightsCard(vm: PendantViewModel) {
     val insightsVersion by vm.insightsVersion.collectAsState()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Your voice insights", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StepBadge(5, "Voice insights")
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             if (!speakerState.loaded || speakerState.enrolled.isEmpty()) {
                 Text(
-                    "Load the voice model and tick a session as yours (the person icon) to switch this card on. " +
-                        "It then shows the sessions where you were detected, what you said in each, and how your speaking is trending by day and month.",
+                    "This card turns on when two things are done: the voice model is loaded, and one session is marked as yours (the person icon). " +
+                        "It then shows the sessions where it heard you, what you said in each, and how your talking is going by day and month.",
                     style = MaterialTheme.typography.bodySmall)
             } else {
                 Button(onClick = { vm.insightsNow() }, enabled = !insightsBusy) {
                     Text(if (insightsBusy) "Generating insights..." else "Insights now")
+                }
+                val insightsNote by vm.insightsNote.collectAsState()
+                if (insightsNote.isNotBlank()) {
+                    Text(insightsNote, style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 val insights = remember(sessions, scores, insightsVersion) { vm.voiceInsights() }
                 if (insights.detected.isEmpty()) {
@@ -765,6 +783,32 @@ fun VoiceInsightsCard(vm: PendantViewModel) {
         }
     }
 }
+
+/** Numbered badge shown beside each setup card's title, so the order is obvious. */
+@Composable
+fun StepBadge(n: Int, title: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            Modifier.size(26.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("$n", color = MaterialTheme.colorScheme.onPrimary,
+                 style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        }
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Small arrow line placed between two setup cards, naming what comes next. */
+@Composable
+fun NextArrow(label: String) {
+    Spacer(Modifier.height(10.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+        Text("\u2193  $label", style = MaterialTheme.typography.bodySmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 @Composable
 fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
     val model by vm.model.collectAsState()
@@ -772,11 +816,11 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
     LaunchedEffect(Unit) { vm.refreshModelInfo() }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("On-device transcription (Whisper)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StepBadge(2, "Turn recordings into text")
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             val mp = model.path
             if (mp == null) {
-                Text("No model loaded. Pick a ggml .bin Whisper model file (no internet needed). tiny.en works; base.en or small.en .bin models also load the same way for noticeably better transcripts.",
+                Text("No transcription model loaded yet. Pick a Whisper model file (.bin). The small one (tiny.en) is fine to start; bigger ones (base.en, small.en) turn the audio into better text.",
                      style = MaterialTheme.typography.bodySmall)
                 Button(onClick = onPickModel) { Text("Load model file") }
             } else {
@@ -1046,21 +1090,15 @@ fun AckCard(vm: PendantViewModel) {
                 }
             }
             Text(
-                "Every transcript is copied into that Drive folder as 2026-10-25_session-12.txt, and copies older " +
-                    "than 14 days are deleted automatically, so Drive never accumulates them. Pick a folder inside " +
-                    "your Drive once; the app itself never uses the internet.",
+                "Each transcript is copied to your Drive folder with its date in the name. Copies older than 14 days are deleted, so the folder stays small. Pick the folder once; the app never uses the internet on its own.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                "On (default): as soon as the pendant connects, a read-only sync starts by itself; if new pages were saved, the backup zip is refreshed afterwards. " +
-                    "Off: you tap Download flash yourself.",
+                "Auto-sync on (default): recordings copy to this phone by themselves when the pendant connects. Off: you tap Download flash yourself.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                "Off (default): the pendant keeps every recording and each sync re-streams its whole flash. " +
-                    "On: each page is acknowledged only after it is saved on this phone, and the pendant erases it, " +
-                    "so later syncs transfer only new pages. This phone then holds the only copy. " +
-                    "A backup zip is rebuilt after every acknowledged sync; keep a copy of it outside the phone.",
+                "Keep recordings on the pendant (default): nothing is ever erased. Erase after copying: once a recording is safely on this phone, the pendant deletes it, so the next sync moves only new recordings. This phone then holds the only copy, so keep a backup of the zip it makes.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -1078,14 +1116,14 @@ fun AiCard(vm: PendantViewModel) {
     val note by vm.aiNote.collectAsState()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Daily insights (AI)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StepBadge(6, "Daily AI card (API key)")
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Write cards automatically", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 Switch(checked = enabled, onCheckedChange = { vm.setAiEnabled(it) })
             }
             Text(
-                "Once a day at the time below, the app sends the day's transcripts to the AI service you chose and writes the reflection cards into the same folder as the transcripts. On Sundays, the 1st of a month and a few other dates it also writes the longer reviews, which send the transcripts for the whole period. The audio itself never leaves the phone, and your key stays in the app's private storage.",
+                "Every day at the time you set, the app sends that day's transcript text to the AI service you picked, and the card it writes back is saved in the same folder as the transcripts. Longer reviews (week, month, year) run on their own set days. Your audio never leaves the phone, and your key stays in the app's private storage.",
                 style = MaterialTheme.typography.bodySmall,
             )
             AiDisclosure(provider, baseUrl)
@@ -1094,6 +1132,9 @@ fun AiCard(vm: PendantViewModel) {
                 Button(onClick = { vm.setAiProvider("gemini") }, enabled = provider != "gemini") { Text("Gemini") }
                 Button(onClick = { vm.setAiProvider("openai"); vm.setAiBaseUrl("https://api.groq.com/openai/v1"); vm.setAiModel("openai/gpt-oss-120b") },
                        enabled = provider != "openai" || baseUrl != "https://api.groq.com/openai/v1") { Text("Groq") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Spacer(Modifier.weight(1f))
                 Button(onClick = { vm.setAiProvider("openai"); vm.setAiBaseUrl("https://openrouter.ai/api/v1"); vm.setAiModel("openai/gpt-oss-120b") },
                        enabled = provider != "openai" || baseUrl != "https://openrouter.ai/api/v1") { Text("OpenRouter") }
                 Button(onClick = { vm.setAiProvider("openai") },
@@ -1106,6 +1147,7 @@ fun AiCard(vm: PendantViewModel) {
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             )
+            Button(onClick = { vm.testAiKey() }) { Text("Save & test key") }
             OutlinedTextField(
                 value = model, onValueChange = { vm.setAiModel(it) },
                 label = { Text("Model (default: " + if (provider == "gemini") "gemini-2.5-flash)" else "gpt-4o-mini)") },
@@ -1127,14 +1169,13 @@ fun AiCard(vm: PendantViewModel) {
             Button(onClick = { vm.aiGenerateNow() }) { Text("Write today's card now") }
             if (note.isNotBlank()) Text(note, style = MaterialTheme.typography.bodySmall)
             Text(
-                "Setup, once:\n" +
-                    "1. Pick the transcripts folder in the Sync & automation card above; the cards are written there.\n" +
-                    "2. Get a key: for Gemini, open aistudio.google.com in a browser, sign in, tap Get API key, create one, copy it.\n" +
-                    "3. Leave Gemini selected and the model as gemini-2.5-flash, then paste your key above.\n" +
+                "Setting up, once:\n" +
+                    "1. Choose the transcripts folder (Step 1 card). Cards are saved there.\n" +
+                    "2. Get a free key. Gemini: open aistudio.google.com in a browser, sign in, tap Get API key, create one, copy it. Groq and OpenRouter also give free keys, no card needed (console.groq.com/keys, openrouter.ai/keys).\n" +
+                    "3. Paste the key above and tap Save & test key. You should see 'Key works'.\n" +
                     "4. Turn on Write cards automatically and set the card time (9 pm is a good default).\n" +
-                    "5. Tap Write today's card now to test; the result line tells you what happened.\n" +
-                    "The card then shows up in the Daily reflection card, exactly like the cards written for you tonight. " +
-                    "Groq and OpenRouter give out free keys with no credit card (console.groq.com/keys and openrouter.ai/keys); Other is for any service with that standard API.",
+                    "5. Tap Write today's card now to see one straight away.\n" +
+                    "Cards are written once a day at the time you set. Tap Write today's card now any time you want one sooner. The new card appears in the Daily reflection card right below this one.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -1438,6 +1479,7 @@ fun VoicesCard() {
     var reload by remember { mutableStateOf(0) }
     var on by remember { mutableStateOf(OtherVoices.enabled(prefs)) }
     var strict by remember { mutableStateOf(OtherVoices.matchThr(prefs)) }
+    var listHidden by remember { mutableStateOf(prefs.getBoolean("voices_list_hidden", false)) }
     LaunchedEffect(reload) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             val v = OtherVoices.load(ctx).sortedByDescending { it.lastSeenMs }
@@ -1448,22 +1490,27 @@ fun VoicesCard() {
     }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(if (voices.isEmpty()) "Other voices" else "Other voices (" + voices.size + ")",
-                 style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StepBadge(8, if (voices.isEmpty()) "Other voices" else "Other voices (" + voices.size + ")")
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Learn recurring voices", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                 Switch(checked = on, onCheckedChange = { on = it; OtherVoices.setEnabled(prefs, it) })
             }
             Text(
-                "When sessions are scored, voice that is clearly not yours is grouped into recurring voices so you can name them. " +
-                    "Names stay on this phone; only named voices are told the AI service apart from \u201Cothers\u201D.",
+                "When sessions are scored, any voice that is clearly not yours is grouped into a repeat voice you can name. " +
+                    "Names stay on this phone. Only named voices are told to the AI service; unnamed ones stay “others”.",
                 style = MaterialTheme.typography.bodySmall)
             if (voices.isEmpty()) {
                 Text(
                     "No other voices yet. Score new sessions in the Voiceprint card; a voice appears here once several windows agree it is the same person.",
                     style = MaterialTheme.typography.bodySmall)
             }
+            if (listHidden && voices.isNotEmpty()) {
+                TextButton(onClick = { listHidden = false; prefs.edit().putBoolean("voices_list_hidden", false).apply() }) {
+                    Text("Show " + voices.size + " other voice" + if (voices.size == 1) "" else "s")
+                }
+            }
+            if (!listHidden) {
             voices.take(10).forEach { v ->
                 Column(Modifier.fillMaxWidth()) {
                     Text(
@@ -1507,12 +1554,17 @@ fun VoicesCard() {
                     Text("\u2022 $nm: not heard for $days days", style = MaterialTheme.typography.bodySmall)
                 }
             }
+                TextButton(onClick = { listHidden = true; prefs.edit().putBoolean("voices_list_hidden", true).apply() }) {
+                    Text("Hide these voices")
+                }
+            }
+            Text(
+                "Match strictness: " + String.format(Locale.US, "%.2f", strict) +
+                    "  (higher = only very sure matches)",
+                style = MaterialTheme.typography.bodySmall)
+            Slider(value = strict, onValueChange = { strict = it; OtherVoices.setMatchThr(prefs, it) },
+                   valueRange = 0.50f..0.95f)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Match strictness " + String.format(Locale.US, "%.2f", strict),
-                    style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { val nv = (strict + 0.05f).coerceAtMost(0.95f); strict = nv; OtherVoices.setMatchThr(prefs, nv) }) { Text("Stricter") }
-                TextButton(onClick = { val nv = (strict - 0.05f).coerceAtLeast(0.50f); strict = nv; OtherVoices.setMatchThr(prefs, nv) }) { Text("Looser") }
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = { OtherVoices.clear(ctx); reload += 1 }) { Text("Forget all voices") }
             }
@@ -1549,7 +1601,7 @@ fun SpeakerCard(vm: PendantViewModel, onPickModel: () -> Unit) {
     val note by vm.speakerNote.collectAsState()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Voiceprint", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            StepBadge(3, "Teach it your voice")
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             Text(
                 "Tells your voice from background chatter and TV. Everything runs on this phone.",
@@ -1559,7 +1611,7 @@ fun SpeakerCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                 Text(if (speaker.loaded) "Voice model loaded (tap to replace)" else "Load voice model (.onnx)")
             }
             Text(
-                "Wear the pendant and talk normally for a minute, sync, then tap the person+ icon on that session in Recordings below. One session is enough; more is better.",
+                "Wear the pendant and chat normally for a minute, sync, then tap the person+ icon next to that session in the Recordings card below. One session is enough; more makes the match better.",
                 style = MaterialTheme.typography.bodySmall,
             )
             if (speaker.enrolled.isNotEmpty()) {

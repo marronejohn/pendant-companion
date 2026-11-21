@@ -13,8 +13,8 @@ android {
         applicationId = "com.pendantcompanion"
         minSdk = 26
         targetSdk = 35
-        versionCode = 33
-        versionName = "0.15.2"
+        versionCode = 34
+        versionName = "0.16.0"
         ndk { abiFilters += "arm64-v8a" }
     }
     externalNativeBuild {

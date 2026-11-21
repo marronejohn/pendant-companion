@@ -813,6 +813,8 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private val _insightsBusy = MutableStateFlow(false)
+    private val _insightsNote = MutableStateFlow("")
+    val insightsNote: StateFlow<String> = _insightsNote
     val insightsBusy: StateFlow<Boolean> = _insightsBusy
     private val _insightsVersion = MutableStateFlow(0)
     val insightsVersion: StateFlow<Int> = _insightsVersion
@@ -834,10 +836,15 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     scoreSessions()
                     return@launch
                 }
-                _decodeNote.value = if (hadScores) "Insights refreshed from ${_speakerScores.value.size} scored sessions."
-                                    else "Nothing scored yet: load the voice model, enroll a session, then try Insights now again."
+                if (hadScores) {
+                    // Catch any sessions recorded since the last scoring pass.
+                    scoreSessions()
+                    _insightsNote.value = "Insights refreshed from ${_speakerScores.value.size} scored sessions."
+                } else {
+                    _insightsNote.value = "Nothing scored yet: load the voice model, enroll a session, then try Insights now again."
+                }
             } catch (e: Exception) {
-                _decodeNote.value = "Insights refresh failed: ${e.message}"
+                _insightsNote.value = "Insights refresh failed: ${e.message}"
             } finally {
                 _insightsBusy.value = false
             }
@@ -2569,11 +2576,27 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshAiNote() { _aiNote.value = ReflectionAi.lastResult(prefs) }
 
-    /** Write today's card right now; rewrites an existing one, for testing. */
+    /** Write today's card right now; rewrites an existing one, for testing.
+     *  Refreshes the Daily reflection card as soon as the write lands, so the
+     *  user sees the result immediately instead of after a restart. */
     fun aiGenerateNow() {
         scope.launch(Dispatchers.IO) {
             _aiNote.value = "Calling the AI service..."
             _aiNote.value = ReflectionAi.generateDue(getApplication(), manual = true)
+            try { loadReflections(force = true) } catch (_: Exception) {}
+            refreshAiNote()
+        }
+    }
+
+    /** Save-and-test the API key: one tiny call, plain result on the card. */
+    fun testAiKey() {
+        scope.launch(Dispatchers.IO) {
+            _aiNote.value = "Testing your key..."
+            val res = ReflectionAi.testKey(prefs)
+            _aiNote.value = res
+            if (res.startsWith("Key works")) {
+                try { ReflectionAi.armNext(getApplication()) } catch (_: Exception) {}
+            }
         }
     }
 
