@@ -835,6 +835,13 @@ fun WhisperCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                 Button(onClick = { vm.transcribeAllSessions() }, enabled = b == null) {
                     Text("Transcribe all sessions")
                 }
+                Button(onClick = { vm.transcribeAllSessions(false, true) }, enabled = b == null) {
+                    Text("Boost processing")
+                }
+                Text(
+                    "Boost transcribes every recording at once with every core at top priority: much faster, but the phone gets hot and the battery drains. Leave it plugged in.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 b?.let { bt ->
                     if (bt.total > 0 && bt.fraction > 0f) {
                         LinearProgressIndicator(
@@ -1631,6 +1638,14 @@ fun SpeakerCard(vm: PendantViewModel, onPickModel: () -> Unit) {
                    enabled = speaker.loaded && speaker.enrolled.isNotEmpty()) {
                 Text("Rescore all sessions")
             }
+            Button({ vm.scoreSessions(true, true) },
+                   enabled = speaker.loaded && speaker.enrolled.isNotEmpty()) {
+                Text("Boost processing")
+            }
+            Text(
+                "Boost rescoring runs several sessions at once on every core at top priority: much faster, but the phone gets hot.",
+                style = MaterialTheme.typography.bodySmall,
+            )
             if (scores.isNotEmpty()) {
                 Text("Your voice, per session:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                 scores.values.sortedByDescending { it.youPct }.forEach { sv ->

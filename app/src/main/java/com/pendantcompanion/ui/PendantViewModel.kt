@@ -672,14 +672,14 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         if (enrolled.isNotEmpty()) rescoreAfterEnrollChange()
     }
 
-    fun scoreSessions(force: Boolean = false) {
+    fun scoreSessions(force: Boolean = false, boost: Boolean = false) {
         if (!_speaker.value.loaded) { _speakerNote.value = "Load the voice model file first."; return }
         if (speakerVecs.isEmpty()) { _speakerNote.value = "Enroll a session of your voice first."; return }
         if (speakerJob?.isActive == true) return
         val c = speakerCentroid ?: return
         val thr = _speaker.value.threshold
         speakerStop = false
-        speakerJob = scope.launch(Dispatchers.IO) { scoreAll(force, c, thr) }
+        speakerJob = scope.launch(Dispatchers.IO) { scoreAll(force, c, thr, boost) }
     }
 
     /** Scores every session against the current voiceprint without the busy
@@ -692,88 +692,137 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         scope.launch(Dispatchers.IO) { scoreAll(false, c, thr) }
     }
 
-    private fun scoreAll(force: Boolean, c: FloatArray, thr: Float) {
-        run {
-            try {
-                val list = _sessions.value
-                if (list.isEmpty()) { _speakerNote.value = "No sessions on the phone yet; sync first."; return }
-                val res = mutableMapOf<Int, SessionVoice>()
-                var i = 0
-                var skipped = 0
-                var skippedScored = 0
-                val enrollVersion = prefs.getInt("speaker_enroll_version", 1)
-                val otherOn = OtherVoices.enabled(prefs)
-                for (si in list) {
-                    if (speakerStop) return
-                    // Short or empty recordings never carry enough of the wearer's
-                    // voice to score meaningfully; leave them out entirely.
-                    if (shortSession(si, _minSessionSec.value) || si.pages <= 1) { skipped++; continue }
-                    // Already scored against this voiceprint: keep the saved
-                    // score instead of redoing the model work.
-                    if (!force) {
-                        val tf = tagsFile(si.session)
-                        if (tf.exists()) {
-                            val storedEv = try {
-                                org.json.JSONObject(tf.readText()).optInt("ev", 0)
-                            } catch (_: Exception) { 0 }
-                            if (storedEv == enrollVersion) { skippedScored++; continue }
-                        }
-                    }
-                    i++
-                    _speakerNote.value = "Scoring session ${si.session} ($i of ${list.size})…"
-                    try {
-                        val wav = ensureSessionWav(si.session) ?: continue
-                        val samples = wavToSamples(wav)
-                        val w = 48000; val hop = 24000
-                        val starts = mutableListOf<Int>(); val scores = mutableListOf<Float>()
-                        val otherIdx = ArrayList<Pair<Int, FloatArray>>()
-                        var st = 0
-                        while (st + w <= samples.size) {
-                            var sum = 0.0
-                            for (k in st until st + w step 4) { val g = samples[k]; sum += g * g }
-                            if (sum / (w / 4) > 0.005 * 0.005) {
-                                val v = SpeakerVerifier.embed(samples.copyOfRange(st, st + w))
-                                if (v != null) {
-                                    val sc = SpeakerVerifier.cosine(v, c)
-                                    starts.add(st / 16000); scores.add(sc)
-                                    // Voice that is clearly not the wearer feeds the
-                                    // other-voices clustering (kept on this phone).
-                                    if (otherOn && sc < thr - 0.10f) otherIdx.add(Pair(starts.size - 1, v))
+    private fun scoreAll(force: Boolean, c: FloatArray, thr: Float, boost: Boolean = false) {
+        try {
+            val list = _sessions.value
+            if (list.isEmpty()) { _speakerNote.value = "No sessions on the phone yet; sync first."; return }
+            val res = java.util.concurrent.ConcurrentHashMap<Int, SessionVoice>()
+            val skipped = java.util.concurrent.atomic.AtomicInteger(0)
+            val skippedScored = java.util.concurrent.atomic.AtomicInteger(0)
+            val nextIdx = java.util.concurrent.atomic.AtomicInteger(0)
+            val scoredCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val enrollVersion = prefs.getInt("speaker_enroll_version", 1)
+            val otherOn = OtherVoices.enabled(prefs)
+            if (boost) {
+                // Boost: several sessions score at the same time, one worker
+                // per core up to 6, each at boosted thread priority. Each
+                // session writes its own tags file, the shared counters are
+                // atomic and the other-voices store is lock-protected, so
+                // this is safe to run wide; the phone gets hot, which is the
+                // price of the button being a deliberate one.
+                val cores = Runtime.getRuntime().availableProcessors()
+                val workers = minOf(cores, 6)
+                val annotLock = Any()
+                kotlinx.coroutines.runBlocking {
+                    kotlinx.coroutines.coroutineScope {
+                        repeat(workers) {
+                            launch(kotlinx.coroutines.Dispatchers.IO) {
+                                try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) } catch (_: Exception) {}
+                                while (true) {
+                                    if (speakerStop) return@launch
+                                    val idx = nextIdx.getAndIncrement()
+                                    if (idx >= list.size) break
+                                    scoreOneSession(list[idx], force, c, thr, enrollVersion, otherOn,
+                                        res, skipped, skippedScored, scoredCount, list.size, annotLock)
                                 }
                             }
-                            st += hop
                         }
-                        if (scores.isEmpty()) continue
-                        val voiceIds = IntArray(scores.size)
-                        if (otherOn && otherIdx.isNotEmpty()) {
-                            try {
-                                val ids = OtherVoices.annotate(getApplication<Application>(),
-                                    otherIdx.map { it.second }, si.session,
-                                    if (si.startMs > 0) si.startMs else System.currentTimeMillis(),
-                                    c)
-                                for (k in otherIdx.indices) voiceIds[otherIdx[k].first] = ids[k]
-                            } catch (_: Exception) {}
-                        }
-                        val you = scores.count { it >= thr }
-                        res[si.session] = SessionVoice(si.session, you * 100 / scores.size, scores.size, scores.size)
-                        val sb = StringBuilder()
-                        sb.append("{\"ev\":").append(enrollVersion).append(",\"win\":3.0,\"hop\":1.5,\"thr\":").append(thr).append(",\"w\":[")
-                        starts.indices.forEach { j ->
-                            if (j > 0) sb.append(",")
-                            sb.append("[").append(starts[j]).append(",").append(scores[j]).append(",").append(voiceIds[j]).append("]")
-                        }
-                        sb.append("]}")
-                        tagsFile(si.session).writeText(sb.toString())
-                    } catch (e: Exception) { /* skip this session */ }
+                    }
                 }
-                _speakerScores.value = res
-                _speakerNote.value = "Scored ${res.size} sessions against your voiceprint" +
-                        (if (skipped > 0 || skippedScored > 0) " (skipped $skipped short or empty, $skippedScored already scored)." else ".")
-                _insightsVersion.value += 1
-            } catch (e: Exception) {
-                _speakerNote.value = "Scoring failed: ${e.message ?: e.javaClass.simpleName}"
+            } else {
+                for (si in list) {
+                    if (speakerStop) return
+                    scoreOneSession(si, force, c, thr, enrollVersion, otherOn,
+                        res, skipped, skippedScored, scoredCount, list.size, null)
+                }
             }
+            _speakerScores.value = res
+            _speakerNote.value = "Scored ${res.size} sessions against your voiceprint" +
+                    (if (skipped.get() > 0 || skippedScored.get() > 0) " (skipped ${skipped.get()} short or empty, ${skippedScored.get()} already scored)." else ".")
+            _insightsVersion.value += 1
+        } catch (e: Exception) {
+            _speakerNote.value = "Scoring failed: ${e.message ?: e.javaClass.simpleName}"
         }
+    }
+
+    /** Scores one session against the current voiceprint. Safe to call from
+     *  several threads at once: per-session state is local, counters are
+     *  atomic, and annotLock serializes the shared other-voices store. */
+    private fun scoreOneSession(
+        si: SessionInfo,
+        force: Boolean,
+        c: FloatArray,
+        thr: Float,
+        enrollVersion: Int,
+        otherOn: Boolean,
+        res: java.util.concurrent.ConcurrentHashMap<Int, SessionVoice>,
+        skipped: java.util.concurrent.atomic.AtomicInteger,
+        skippedScored: java.util.concurrent.atomic.AtomicInteger,
+        scoredCount: java.util.concurrent.atomic.AtomicInteger,
+        total: Int,
+        annotLock: Any?,
+    ) {
+        try {
+            // Short or empty recordings never carry enough of the wearer's
+            // voice to score meaningfully; leave them out entirely.
+            if (shortSession(si, _minSessionSec.value) || si.pages <= 1) { skipped.incrementAndGet(); return }
+            // Already scored against this voiceprint: keep the saved
+            // score instead of redoing the model work.
+            if (!force) {
+                val tf = tagsFile(si.session)
+                if (tf.exists()) {
+                    val storedEv = try {
+                        org.json.JSONObject(tf.readText()).optInt("ev", 0)
+                    } catch (_: Exception) { 0 }
+                    if (storedEv == enrollVersion) { skippedScored.incrementAndGet(); return }
+                }
+            }
+            val n = scoredCount.incrementAndGet()
+            _speakerNote.value = "Scoring session ${si.session} ($n of $total)…"
+            val wav = ensureSessionWav(si.session) ?: return
+            val samples = wavToSamples(wav)
+            val w = 48000; val hop = 24000
+            val starts = mutableListOf<Int>(); val scores = mutableListOf<Float>()
+            val otherIdx = ArrayList<Pair<Int, FloatArray>>()
+            var st = 0
+            while (st + w <= samples.size) {
+                var sum = 0.0
+                for (k in st until st + w step 4) { val g = samples[k]; sum += g * g }
+                if (sum / (w / 4) > 0.005 * 0.005) {
+                    val v = SpeakerVerifier.embed(samples.copyOfRange(st, st + w))
+                    if (v != null) {
+                        val sc = SpeakerVerifier.cosine(v, c)
+                        starts.add(st / 16000); scores.add(sc)
+                        // Voice that is clearly not the wearer feeds the
+                        // other-voices clustering (kept on this phone).
+                        if (otherOn && sc < thr - 0.10f) otherIdx.add(Pair(starts.size - 1, v))
+                    }
+                }
+                st += hop
+            }
+            if (scores.isEmpty()) return
+            val voiceIds = IntArray(scores.size)
+            if (otherOn && otherIdx.isNotEmpty()) {
+                try {
+                    fun doAnnotate(): List<Int> = OtherVoices.annotate(getApplication<Application>(),
+                        otherIdx.map { it.second }, si.session,
+                        if (si.startMs > 0) si.startMs else System.currentTimeMillis(),
+                        c)
+                    val ids = if (annotLock != null) synchronized(annotLock) { doAnnotate() } else doAnnotate()
+                    for (k in otherIdx.indices) voiceIds[otherIdx[k].first] = ids[k]
+                } catch (_: Exception) {}
+            }
+            val you = scores.count { it >= thr }
+            res[si.session] = SessionVoice(si.session, you * 100 / scores.size, scores.size, scores.size)
+            val sb = StringBuilder()
+            sb.append("{\"ev\":").append(enrollVersion).append(",\"win\":3.0,\"hop\":1.5,\"thr\":").append(thr).append(",\"w\":[")
+            starts.indices.forEach { j ->
+                if (j > 0) sb.append(",")
+                sb.append("[").append(starts[j]).append(",").append(scores[j]).append(",").append(voiceIds[j]).append("]")
+            }
+            sb.append("]}")
+            tagsFile(si.session).writeText(sb.toString())
+        } catch (e: Exception) { /* skip this session */ }
     }
 
     /** Rebuilds the speaker scores from the saved per-session tags files, so
@@ -2175,7 +2224,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
 
     val batch: StateFlow<BatchProgress?> = BatchRunner.state
 
-    fun transcribeAllSessions(onlyNew: Boolean = false) {
+    fun transcribeAllSessions(onlyNew: Boolean = false, boost: Boolean = false) {
         if (BatchRunner.job?.isActive == true) return
         val app = getApplication<Application>()
         // No previous batch running but a stale progress line left over? Clear it.
@@ -2192,11 +2241,11 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
         BatchRunner.state.value = BatchProgress(0, 0, -1, 0, "starting batch...")
         BatchRunner.job = BatchRunner.scope.launch {
             try { TranscribeService.start(app) } catch (_: Exception) {}
-            runBatch(onlyNew)
+            runBatch(onlyNew, boost)
         }
     }
 
-    private suspend fun runBatch(onlyNew: Boolean = false) {
+    private suspend fun runBatch(onlyNew: Boolean = false, boost: Boolean = false) {
         try {
             val mf = modelFile()
             if (!mf.exists() || mf.length() < 10_000_000) {
@@ -2208,7 +2257,15 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
             // Several independent Whisper contexts transcribe different
             // sessions at once. Small models (tiny.en, ~32 MB) allow 3
             // workers; larger ones (base.en and up) use 2 to stay in memory.
-            val workers = if (mf.length() > 50_000_000) 2 else 3
+            // Boost raises both (more sessions in flight) and runs every
+            // worker at boosted thread priority; the phone gets hot and the
+            // battery drains, so it is a deliberate button, not a default.
+            val workers = when {
+                boost && mf.length() > 50_000_000 -> 3
+                boost -> 4
+                mf.length() > 50_000_000 -> 2
+                else -> 3
+            }
             val perWorker = maxOf(2, cores / workers)
             val minSec = _minSessionSec.value
             val targets = _sessions.value
@@ -2251,6 +2308,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 kotlinx.coroutines.coroutineScope {
                     repeat(workers) { w ->
                         launch(kotlinx.coroutines.Dispatchers.Default) {
+                            if (boost) { try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) } catch (_: Exception) {} }
                             val h = WhisperBridge.nativeInit(mf.absolutePath)
                             if (h == 0L) { failed.incrementAndGet(); return@launch }
                             _model.value = _model.value.copy(ready = true)
@@ -2301,7 +2359,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } finally { ticker.cancel() }
             BatchRunner.state.value = BatchProgress(done.get(), total, -1, failed.get(), "finished", 1f)
-            kotlinx.coroutines.delay(30_000)
+            if (!boost) kotlinx.coroutines.delay(30_000)
             BatchRunner.state.value = null
         } catch (e: kotlinx.coroutines.CancellationException) {
             BatchRunner.state.value = null
