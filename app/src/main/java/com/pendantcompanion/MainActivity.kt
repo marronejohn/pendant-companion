@@ -300,10 +300,14 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
         }
         Spacer(Modifier.height(16.dp))
         val syncRunning = (sync as? PendantViewModel.SyncProgress)?.finished == false
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button({ vm.checkStorageNow() }, enabled = !syncRunning) { Text("Check storage") }
-            Button({ vm.syncReadOnly() }, enabled = !syncRunning) {
-                Text(if (syncRunning) "Syncing..." else "Download flash")
+        // Stacked, not one row: three buttons overflow a narrow card and the
+        // third used to be pushed off the right edge, invisible.
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button({ vm.checkStorageNow() }, enabled = !syncRunning) { Text("Check storage") }
+                Button({ vm.syncReadOnly() }, enabled = !syncRunning) {
+                    Text(if (syncRunning) "Syncing..." else "Download flash")
+                }
             }
             Button({ vm.syncReadOnly(false, true) }, enabled = !syncRunning) {
                 Text(if (syncRunning) "Syncing..." else "Boost processing")
