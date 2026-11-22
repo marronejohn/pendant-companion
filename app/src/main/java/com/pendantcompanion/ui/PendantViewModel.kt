@@ -1242,17 +1242,20 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
      * NEVER acknowledges pages (no delete_flash_page), so the pendant keeps
      * everything; this is the hard default of the project spec.
      */
-    fun syncReadOnly(fromAutoSync: Boolean = false) {
+    fun syncReadOnly(fromAutoSync: Boolean = false, boost: Boolean = false) {
         val s = session ?: return
         val c = client ?: return
         if (syncJob?.isActive == true) return
         syncJob = scope.launch(Dispatchers.Main) {
-            var pages = 0
-            var frames = 0L
-            var bytes = 0L
-            var skipped = 0
-            var lastIdx = -1
+            // Atomics so the boost worker (a different thread) can update
+            // them while the drain-detection loop below reads progress.
+            val pages = java.util.concurrent.atomic.AtomicInteger(0)
+            val frames = java.util.concurrent.atomic.AtomicLong(0)
+            val bytes = java.util.concurrent.atomic.AtomicLong(0)
+            val skipped = java.util.concurrent.atomic.AtomicInteger(0)
+            val lastIdx = java.util.concurrent.atomic.AtomicInteger(-1)
             var note = ""
+            var parseExecutor: java.util.concurrent.ExecutorService? = null
             try {
                 val ctx = getApplication<Application>()
                 val dir = java.io.File(ctx.filesDir, "flash_pages").apply { mkdirs() }
@@ -1274,6 +1277,17 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 } catch (_: Exception) { /* storage readout failed: do the full sync */ }
                 val ack = ackMode.value
+                // Boost: a single dedicated worker at boosted thread priority
+                // takes each flash page off the Bluetooth notify thread, so
+                // parsing and disk writes never make the pendant's stream
+                // wait. The BLE link itself (already at high connection
+                // priority + 2M PHY) stays the hard speed ceiling; this just
+                // makes sure the phone is never the bottleneck.
+                parseExecutor = if (boost) java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+                    Thread(r).apply {
+                        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) } catch (_: Exception) {}
+                    }
+                } else null
                 // Progress is throttled to one emission every 500 ms instead
                 // of one per page, which used to drown the main thread during
                 // a multi-thousand-page sync.
@@ -1289,52 +1303,55 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 s.storageListener = { buf ->
                     val page = buf.flashPage.toByteArray()
                     if (page.isNotEmpty()) {
-                        val fp = FlashPageParser.fromStorageBuffer(
-                            buf.ingestTypeValue, buf.session, buf.run, buf.seq,
-                            buf.index, page)
-                        val f = java.io.File(dir, "page_%08d_session%d.bin".format(fp.index, fp.session))
-                        var ackThisPage = false
-                        if (f.exists()) {
-                            // already on this phone from an earlier sync: keep the
-                            // original file, only count the transfer
-                            skipped++
-                            ackThisPage = true
-                            prog(pages, frames, bytes, lastIdx,
-                                "page ${fp.index} already on this phone, skipping (${skipped} so far)")
-                        } else {
-                            if (ack) {
-                                // Acknowledge mode erases the pendant copy once a
-                                // page is durably saved, so it keeps the fsync.
-                                java.io.FileOutputStream(f).use { fos ->
-                                    fos.write(fp.rawPageBytes)
-                                    fos.fd.sync()
-                                }
-                                ackThisPage = f.length() == fp.rawPageBytes.size.toLong()
-                            } else {
-                                // Read-only fast path: buffered write + atomic
-                                // rename, no per-page fsync. A crash can lose a
-                                // page but never half-write one, and the pendant
-                                // keeps its own copy regardless.
-                                val tmp = java.io.File(dir, f.name + ".part")
-                                java.io.FileOutputStream(tmp).use { it.write(fp.rawPageBytes) }
-                                if (!tmp.renameTo(f)) {
-                                    tmp.delete()
-                                    java.io.FileOutputStream(f).use { it.write(fp.rawPageBytes) }
-                                }
+                        val handle: () -> Unit = {
+                            val fp = FlashPageParser.fromStorageBuffer(
+                                buf.ingestTypeValue, buf.session, buf.run, buf.seq,
+                                buf.index, page)
+                            val f = java.io.File(dir, "page_%08d_session%d.bin".format(fp.index, fp.session))
+                            var ackThisPage = false
+                            if (f.exists()) {
+                                // already on this phone from an earlier sync: keep the
+                                // original file, only count the transfer
+                                skipped.incrementAndGet()
                                 ackThisPage = true
+                                prog(pages.get(), frames.get(), bytes.get(), lastIdx.get(),
+                                    "page ${fp.index} already on this phone, skipping (${skipped.get()} so far)")
+                            } else {
+                                if (ack) {
+                                    // Acknowledge mode erases the pendant copy once a
+                                    // page is durably saved, so it keeps the fsync.
+                                    java.io.FileOutputStream(f).use { fos ->
+                                        fos.write(fp.rawPageBytes)
+                                        fos.fd.sync()
+                                    }
+                                    ackThisPage = f.length() == fp.rawPageBytes.size.toLong()
+                                } else {
+                                    // Read-only fast path: buffered write + atomic
+                                    // rename, no per-page fsync. A crash can lose a
+                                    // page but never half-write one, and the pendant
+                                    // keeps its own copy regardless.
+                                    val tmp = java.io.File(dir, f.name + ".part")
+                                    java.io.FileOutputStream(tmp).use { it.write(fp.rawPageBytes) }
+                                    if (!tmp.renameTo(f)) {
+                                        tmp.delete()
+                                        java.io.FileOutputStream(f).use { it.write(fp.rawPageBytes) }
+                                    }
+                                    ackThisPage = true
+                                }
+                                pages.incrementAndGet()
+                                frames.addAndGet(fp.opusFrames.size.toLong())
+                                bytes.addAndGet(fp.rawPageBytes.size.toLong())
+                                lastIdx.set(fp.index)
+                                prog(pages.get(), frames.get(), bytes.get(), lastIdx.get(),
+                                    "page ${fp.index} (${fp.rawPageBytes.size} B, ${fp.opusFrames.size} frames)")
                             }
-                            pages++
-                            frames += fp.opusFrames.size
-                            bytes += fp.rawPageBytes.size
-                            lastIdx = fp.index
-                            prog(pages, frames, bytes, lastIdx,
-                                "page ${fp.index} (${fp.rawPageBytes.size} B, ${fp.opusFrames.size} frames)")
-                        }
-                        if (ack && ackThisPage) scope.launch(Dispatchers.IO) {
-                            ackMutex.withLock {
-                                try { s.deleteFlashPageUpTo(fp.index) } catch (_: Exception) {}
+                            if (ack && ackThisPage) scope.launch(Dispatchers.IO) {
+                                ackMutex.withLock {
+                                    try { s.deleteFlashPageUpTo(fp.index) } catch (_: Exception) {}
+                                }
                             }
                         }
+                        if (parseExecutor != null) parseExecutor.execute(handle) else handle()
                     }
                 }
                 s.beginBatchDownload()
@@ -1345,21 +1362,25 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                 var idle = 0
                 while (idle < 30) { // up to ~3 min of total silence
                     kotlinx.coroutines.delay(200)
-                    val p0 = pages
+                    val p0 = pages.get()
                     kotlinx.coroutines.delay(5800)
-                    if (pages == p0) idle++ else idle = 0
+                    if (pages.get() == p0) idle++ else idle = 0
                     if (idle >= 1) break // 6s of silence
                 }
                 try { s.stopBatchDownload() } catch (_: Exception) { /* link may drop */ }
-                note = if (pages == 0 && skipped == 0)
+                if (parseExecutor != null) {
+                    parseExecutor.shutdown()
+                    parseExecutor.awaitTermination(120, java.util.concurrent.TimeUnit.SECONDS)
+                }
+                note = if (pages.get() == 0 && skipped.get() == 0)
                     "pendant sent no pages. Try: short-press the pendant to wake it, make sure no other app is connected to it, then reconnect here and tap Download flash again."
                 else if (ack)
-                    "acknowledged ${pages + skipped} pages; pendant erases them, this phone now holds the only copy"
-                else if (skipped > 0)
-                    "saved $pages new pages, skipped $skipped already on this phone, pendant copy untouched (no ack sent)"
+                    "acknowledged ${pages.get() + skipped.get()} pages; pendant erases them, this phone now holds the only copy"
+                else if (skipped.get() > 0)
+                    "saved ${pages.get()} new pages, skipped ${skipped.get()} already on this phone, pendant copy untouched (no ack sent)"
                 else
-                    "saved $pages pages, pendant copy untouched (no ack sent)"
-                if (ack && (pages > 0 || skipped > 0)) {
+                    "saved ${pages.get()} pages, pendant copy untouched (no ack sent)"
+                if (ack && (pages.get() > 0 || skipped.get() > 0)) {
                     try {
                         val n = kotlinx.coroutines.withContext(Dispatchers.IO) { buildBackupZip(ctx) }
                         note += "; backup zip rebuilt ($n files)"
@@ -1367,7 +1388,7 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         note += "; WARNING: backup zip failed (${e.message}) — acknowledged pages exist only on this phone until an export succeeds"
                     }
                 }
-                if (fromAutoSync && pages > 0) {
+                if (fromAutoSync && pages.get() > 0) {
                     try {
                         val n = kotlinx.coroutines.withContext(Dispatchers.IO) { buildBackupZip(ctx) }
                         note += "; auto-backup zip rebuilt ($n files)"
@@ -1375,15 +1396,17 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         note += "; auto-backup failed (${e.message})"
                     }
                 }
-                syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true, note)
-                if (autoTranscribe.value && !clearAllInProgress && (pages > 0 || skipped > 0)) {
+                syncProgress.value = SyncProgress(pages.get(), frames.get(), bytes.get(), lastIdx.get(), true, note)
+                if (autoTranscribe.value && !clearAllInProgress && (pages.get() > 0 || skipped.get() > 0)) {
                     autoPipelineAfterSync()
                 }
             } catch (e: Exception) {
                 try { s.stopBatchDownload() } catch (_: Exception) {}
-                syncProgress.value = SyncProgress(pages, frames, bytes, lastIdx, true,
-                    "stopped: ${e.message ?: e.javaClass.simpleName}. $pages pages kept, pendant copy untouched")
+                parseExecutor?.let { ex -> ex.shutdown(); ex.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS) }
+                syncProgress.value = SyncProgress(pages.get(), frames.get(), bytes.get(), lastIdx.get(), true,
+                    "stopped: ${e.message ?: e.javaClass.simpleName}. ${pages.get()} pages kept, pendant copy untouched")
             } finally {
+                parseExecutor?.shutdown()
                 s.storageListener = null
                 // re-read storage to prove nothing was freed (time-bounded so a
                 // dead link can never leave this job active and block the next sync)

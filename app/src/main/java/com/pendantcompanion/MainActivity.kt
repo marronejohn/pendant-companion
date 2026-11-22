@@ -305,7 +305,14 @@ fun DeviceInfoCard(s: Connected, vm: PendantViewModel, onDisconnect: () -> Unit)
             Button({ vm.syncReadOnly() }, enabled = !syncRunning) {
                 Text(if (syncRunning) "Syncing..." else "Download flash")
             }
+            Button({ vm.syncReadOnly(false, true) }, enabled = !syncRunning) {
+                Text(if (syncRunning) "Syncing..." else "Boost processing")
+            }
         }
+        Text(
+            "Boost processing hands each flash page to a boosted worker so the phone never slows the pendant's stream. The Bluetooth link itself is still the top speed.",
+            style = MaterialTheme.typography.bodySmall,
+        )
         val crashCtx = androidx.compose.ui.platform.LocalContext.current
         val lastCrash = remember(crashCtx) {
             try {
