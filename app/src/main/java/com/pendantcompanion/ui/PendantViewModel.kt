@@ -1613,11 +1613,14 @@ class PendantViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         val voiced = voicedWindows(wav)
                         val secs = wavSeconds(wav)
-                        // Empty means no real transcript AND either no audible
-                        // audio at all or a recording too short to hold speech
-                        // (under 5 seconds): one-page stubs decode to a second
-                        // or two of room noise that trips the RMS floor.
-                        if (!hasRealTranscript(s.session) && (voiced == 0 || secs < 5.0)) {
+                        // Empty means no real transcript AND no audible audio
+                        // anywhere AND too short to hold any missed speech
+                        // (under 5 minutes). The old rule deleted a session
+                        // that was merely short OR read as silent, which wiped
+                        // short-but-real recordings; now only tiny silent
+                        // stubs go, and anything with a single voiced second
+                        // or a real transcript always stays.
+                        if (!hasRealTranscript(s.session) && voiced == 0 && secs < 300.0) {
                             removeSessionFiles(s.session)
                             removed++; removedIds.add(s.session)
                         } else kept++
